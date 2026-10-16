@@ -12,6 +12,15 @@
 * Фоновый воркер добирает `pending`-заказы с экспоненциальным backoff.
 * Circuit breaker и лимит одновременных вызовов не дают заваливать
   недоступный Payment запросами.
+
+Задание 2 (события):
+* Transactional outbox: статус `paid` и строка события `order.paid` пишутся
+  в одной транзакции, поэтому «оплачен, а события нет» невозможно даже при
+  kill -9. Отдельный публикатор доставляет события в шину «минимум один раз»,
+  id события один на заказ, у всех копий он одинаковый.
+* Входящие `delivery.confirmed`: id события — первичный ключ таблицы
+  `processed_events`; запись события и прибавка к балансу — одна транзакция,
+  поэтому бонусы начисляются ровно один раз при любом числе копий и сбоях.
 """
 
 import asyncio
@@ -22,6 +31,7 @@ import os
 import random
 import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 import httpx
@@ -36,6 +46,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 DATABASE_URL = os.environ["DATABASE_URL"]
 PAYMENT_URL = os.environ["PAYMENT_URL"].rstrip("/")
 INVENTORY_URL = os.environ["INVENTORY_URL"].rstrip("/")
+EVENTS_URL = os.environ.get("EVENTS_URL", "").rstrip("/")
 
 REPLY_BUDGET_S = 0.6        # сколько POST /orders ждёт обработку (лимит задания — 1 с)
 PAYMENT_TIMEOUT_S = 6.0     # таймаут вызова Payment (фон, на ответ клиенту не влияет)
@@ -53,6 +64,13 @@ BREAKER_MIN_SAMPLES = 10
 BREAKER_ERROR_RATE = 0.9    # доля ошибок в окне, после которой размыкаем
 BREAKER_COOLDOWN_S = 3.0    # пауза до пробного запроса, удваивается при неудаче пробы
 BREAKER_COOLDOWN_MAX_S = 15.0
+
+BUS_TIMEOUT_S = 3.0         # таймаут публикации в шину (часть запросов во время отказа висит)
+BUS_CONCURRENCY = 8         # одновременных публикаций
+BUS_LEASE_S = 15            # на сколько событие закрепляется за публикатором
+BUS_COOLDOWN_S = 2.0        # пауза breaker шины до пробной публикации
+BUS_COOLDOWN_MAX_S = 5.0
+OUTBOX_KEEP_S = 3600        # отправленные события хранятся столько, потом удаляются
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orders")
@@ -73,6 +91,28 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_pending_idx
     ON orders (next_attempt_at) WHERE status = 'pending';
+CREATE TABLE IF NOT EXISTS outbox (
+    id              TEXT PRIMARY KEY,
+    order_id        TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    attempts        INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    locked_until    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at         TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS outbox_unsent_idx
+    ON outbox (next_attempt_at) WHERE sent_at IS NULL;
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id   TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    points     BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS bonuses (
+    user_id TEXT PRIMARY KEY,
+    points  BIGINT NOT NULL DEFAULT 0
+);
 """
 
 pool: AsyncConnectionPool
@@ -91,11 +131,14 @@ class Breaker:
     помогает повтор с backoff, а Payment отвечает быстро.
     """
 
-    def __init__(self):
+    def __init__(self, name="payment", cooldown=BREAKER_COOLDOWN_S, cooldown_max=BREAKER_COOLDOWN_MAX_S):
+        self.name = name
+        self.base_cooldown = cooldown
+        self.max_cooldown = cooldown_max
         self.state = "closed"
         self.hard_failures = 0
         self.window = collections.deque(maxlen=BREAKER_WINDOW)
-        self.cooldown = BREAKER_COOLDOWN_S
+        self.cooldown = cooldown
         self.open_until = 0.0
 
     def claim_limit(self):
@@ -116,16 +159,16 @@ class Breaker:
 
     def success(self):
         if self.state != "closed":
-            log.info("breaker: closed")
+            log.info("breaker %s: closed", self.name)
         self.state = "closed"
         self.hard_failures = 0
-        self.cooldown = BREAKER_COOLDOWN_S
+        self.cooldown = self.base_cooldown
         self.window.append(True)
 
     def failure(self, hard):
         """hard — ответа не было вовсе (таймаут, нет соединения)."""
         if self.state == "half_open":
-            self.cooldown = min(self.cooldown * 2, BREAKER_COOLDOWN_MAX_S)
+            self.cooldown = min(self.cooldown * 2, self.max_cooldown)
             self._open()
             return
         if self.state != "closed":
@@ -143,10 +186,12 @@ class Breaker:
         self.open_until = time.monotonic() + self.cooldown
         self.hard_failures = 0
         self.window.clear()
-        log.warning("breaker: open на %.1f с", self.cooldown)
+        log.warning("breaker %s: open на %.1f с", self.name, self.cooldown)
 
 
 breaker = Breaker()
+bus_breaker = Breaker("bus", BUS_COOLDOWN_S, BUS_COOLDOWN_MAX_S)  # отдельный предохранитель для шины событий
+bus_inflight = 0  # сколько публикаций в шину идёт прямо сейчас
 payments_inflight = 0
 cwnd = float(CONCURRENCY_START)  # разрешённое число одновременных вызовов Payment
 
@@ -227,6 +272,21 @@ async def defer(order_id, delay, failed=False):
     )
 
 
+# Делает заказ paid и в той же транзакции кладёт в outbox событие order.paid.
+# Либо произойдёт и то и другое, либо ничего: «paid без события» невозможно.
+async def mark_paid(order_id):
+    event_id = f"order-paid-{order_id}"  # один заказ — одно событие, id детерминирован
+    payload = {"id": event_id, "type": "order.paid", "order_id": order_id,
+               "occurred_at": datetime.now(timezone.utc).isoformat()}
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE orders SET status = 'paid', locked_until = now() WHERE id = %s", (order_id,))
+            await conn.execute(
+                "INSERT INTO outbox (id, order_id, payload) VALUES (%s, %s, %s) "
+                "ON CONFLICT (id) DO NOTHING", (event_id, order_id, Jsonb(payload)))
+
+
 async def advance(o):
     oid = o["id"]
     state = o["payment_state"]
@@ -244,7 +304,7 @@ async def advance(o):
                 return await defer(oid, backoff(o["attempts"]), failed=True)
         await sql("UPDATE orders SET payment_state = %s WHERE id = %s", state, oid)
     if state == "captured":
-        await sql("UPDATE orders SET status = 'paid', locked_until = now() WHERE id = %s", oid)
+        await mark_paid(oid)
     else:  # declined: резерв снимаем, только потом rejected
         await release(oid)
         await sql(
@@ -296,6 +356,89 @@ async def worker():
         await asyncio.sleep(WORKER_TICK_S)
 
 
+# --- публикация событий (outbox) -------------------------------------------
+
+# Публикует одно событие в шину. Любой исход безопасен: если sent_at не успеет
+# записаться, событие уйдёт ещё раз с тем же id, а подписчик отличит копию по id.
+async def publish(row):
+    global bus_inflight
+    eid = row["id"]
+    if bus_inflight >= BUS_CONCURRENCY or not bus_breaker.allow():
+        return await defer_event(eid, random.uniform(0.3, 0.8))  # не звонили, попытку не считаем
+    bus_inflight += 1
+    try:
+        async with asyncio.timeout(BUS_TIMEOUT_S):
+            r = await http.post(f"{EVENTS_URL}/events", json=row["payload"], timeout=BUS_TIMEOUT_S)
+    except (httpx.TimeoutException, httpx.ConnectError, TimeoutError):
+        bus_breaker.failure(hard=True)
+        return await defer_event(eid, event_backoff(row["attempts"]), failed=True)
+    except httpx.HTTPError:
+        bus_breaker.failure(hard=False)
+        return await defer_event(eid, event_backoff(row["attempts"]), failed=True)
+    finally:
+        bus_inflight -= 1
+    if r.status_code == 202:
+        bus_breaker.success()
+        await sql("UPDATE outbox SET sent_at = now() WHERE id = %s", eid)
+        log.info("event %s: опубликовано", eid)
+    else:  # 503 и прочее: шина не приняла
+        bus_breaker.failure(hard=False)
+        await defer_event(eid, event_backoff(row["attempts"]), failed=True)
+
+
+# Пауза между попытками публикации одного события: 0.5·2^n, максимум 5 с, с разбросом.
+def event_backoff(attempts):
+    return min(0.5 * 2 ** attempts, 5.0) * random.uniform(0.5, 1.5)
+
+
+# Откладывает событие: освобождает аренду и назначает следующую попытку.
+async def defer_event(event_id, delay, failed=False):
+    await sql(
+        "UPDATE outbox SET next_attempt_at = now() + make_interval(secs => %s), "
+        "locked_until = now(), attempts = attempts + %s WHERE id = %s",
+        delay, 1 if failed else 0, event_id)
+
+
+# Обёртка: ошибка публикации не должна ронять задачу; событие подберут позже.
+async def publish_safe(row):
+    try:
+        await publish(row)
+    except Exception as e:
+        log.warning("event %s: публикация не удалась (%s: %s)", row["id"], type(e).__name__, e)
+
+
+# Захват неотправленных событий (аналог claim() для заказов).
+async def claim_events(limit):
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE outbox SET locked_until = now() + make_interval(secs => %s) "
+            "WHERE id IN (SELECT id FROM outbox WHERE sent_at IS NULL "
+            "AND next_attempt_at <= now() AND locked_until <= now() "
+            "ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED) "
+            "RETURNING id, payload, attempts",
+            (BUS_LEASE_S, limit))
+        return await cur.fetchall()
+
+
+# Фоновый цикл публикатора. Раз в минуту удаляет давно отправленные события,
+# чтобы таблица не росла бесконечно.
+async def publisher():
+    last_cleanup = time.monotonic()
+    while True:
+        try:
+            limit = min(bus_breaker.claim_limit(), BUS_CONCURRENCY - bus_inflight)
+            if EVENTS_URL and limit > 0:
+                for row in await claim_events(limit):
+                    spawn(publish_safe(row))
+            if time.monotonic() - last_cleanup > 60:
+                last_cleanup = time.monotonic()
+                await sql("DELETE FROM outbox WHERE sent_at < now() - make_interval(secs => %s)",
+                          OUTBOX_KEEP_S)
+        except Exception:
+            log.exception("publisher")
+        await asyncio.sleep(WORKER_TICK_S)
+
+
 # --- HTTP ------------------------------------------------------------------
 
 def valid(body):
@@ -336,10 +479,17 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else:
         raise SystemExit("не дождался базы")
+    # Процесс один: аренды, оставшиеся от убитого процесса, снимаем сразу, а не ждём
+    # их истечения. Если бы реплик было несколько, повтор всё равно безопасен
+    # (оплата и резерв идемпотентны, публикация допускает копии).
+    await sql("UPDATE orders SET locked_until = now() WHERE status = 'pending'")
+    await sql("UPDATE outbox SET locked_until = now() WHERE sent_at IS NULL")
     http = httpx.AsyncClient(limits=httpx.Limits(max_connections=100))
     worker_task = asyncio.create_task(worker())
+    publisher_task = asyncio.create_task(publisher())
     yield
     worker_task.cancel()
+    publisher_task.cancel()
     await http.aclose()
     await pool.close()
 
@@ -397,6 +547,43 @@ async def get_order(order_id: str):
     if row is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
     return row
+
+
+# Входящее событие delivery.confirmed. Всегда отвечаем 2xx, если событие корректно:
+# и на новое, и на уже обработанное (иначе шина будет слать его вечно).
+@app.post("/webhooks/delivery")
+async def delivery_webhook(request: Request):
+    try:
+        event = json.loads(await request.body() or b"null")
+    except ValueError:
+        event = None
+    if (not isinstance(event, dict)
+            or not isinstance(event.get("id"), str) or not event["id"]
+            or not isinstance(event.get("user_id"), str) or not event["user_id"]
+            or not isinstance(event.get("bonus_points"), int)
+            or isinstance(event["bonus_points"], bool) or event["bonus_points"] <= 0):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    async with pool.connection() as conn:
+        async with conn.transaction():  # запись события и прибавка баланса — атомарно
+            cur = await conn.execute(
+                "INSERT INTO processed_events (event_id, user_id, points) VALUES (%s, %s, %s) "
+                "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                (event["id"], event["user_id"], event["bonus_points"]))
+            if await cur.fetchone() is not None:  # событие новое: начисляем
+                await conn.execute(
+                    "INSERT INTO bonuses (user_id, points) VALUES (%s, %s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET points = bonuses.points + EXCLUDED.points",
+                    (event["user_id"], event["bonus_points"]))
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
+# Бонусный баланс покупателя; у покупателя без начислений — 0.
+@app.get("/users/{user_id}/bonus")
+async def get_bonus(user_id: str):
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT points FROM bonuses WHERE user_id = %s", (user_id,))
+        row = await cur.fetchone()
+    return {"points": row["points"] if row else 0}
 
 
 if __name__ == "__main__":
