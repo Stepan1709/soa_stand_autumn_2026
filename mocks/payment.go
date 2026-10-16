@@ -31,7 +31,7 @@ func (s *state) handleCharge(w http.ResponseWriter, r *http.Request) {
 		entry.Blackhole = true
 		wt := s.logChargeLocked(entry, ev, true)
 		s.mu.Unlock()
-		gone := s.hang(w, r)
+		gone := s.hangWhile(w, r, s.inBlackholeLocked)
 		s.finish(wt, "no_response", gone)
 		if !gone {
 			closeWithoutResponse(w)
@@ -172,7 +172,7 @@ func (s *state) handleLookup(w http.ResponseWriter, r *http.Request) {
 		entry.Outcome, entry.Blackhole = "blackhole", true
 		wt := s.logGetLocked(entry, true)
 		s.mu.Unlock()
-		gone := s.hang(w, r)
+		gone := s.hangWhile(w, r, s.inBlackholeLocked)
 		s.finish(wt, "no_response", gone)
 		if !gone {
 			closeWithoutResponse(w)
@@ -198,9 +198,9 @@ func (s *state) handleLookup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// hang держит соединение без ответа, пока Payment недоступен (или клиент не
-// ушёл), затем закрывает его без ответа. true — соединение закрыл клиент.
-func (s *state) hang(w http.ResponseWriter, r *http.Request) bool {
+// hangWhile держит соединение без ответа, пока длится отказ (down — Payment
+// или шины) и клиент не ушёл. true — соединение закрыл клиент.
+func (s *state) hangWhile(w http.ResponseWriter, r *http.Request, down func(time.Time) bool) bool {
 	s.mu.Lock()
 	epoch := s.epoch
 	s.mu.Unlock()
@@ -212,7 +212,7 @@ func (s *state) hang(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		case now := <-t.C:
 			s.mu.Lock()
-			still := s.epoch == epoch && s.inBlackholeLocked(now)
+			still := s.epoch == epoch && down(now)
 			s.mu.Unlock()
 			if !still {
 				// Сначала отметка в фактах, потом закрытие: клиент не увидит

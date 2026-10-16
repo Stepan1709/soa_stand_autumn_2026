@@ -16,6 +16,8 @@ type scenarioDef struct {
 	Title string
 	// extra — проверки, специфичные для сценария (общие — в commonChecks).
 	extra func(p *ScenarioParams, rs *runState) []check
+	// noOrders — сценарий без заказов (S8): общих проверок заказов нет.
+	noOrders bool
 }
 
 var scenarioDefs = []scenarioDef{
@@ -24,6 +26,9 @@ var scenarioDefs = []scenarioDef{
 	{ID: "S3", Title: "Payment выполняет операцию, но отвечает медленно", extra: nil},
 	{ID: "S4", Title: "Payment не отвечает, потом поднимается", extra: checksS4},
 	{ID: "S5", Title: "Payment выполняет операцию и теряет ответ", extra: nil},
+	{ID: "S6", Title: "Шина событий недоступна, потом поднимается", extra: checksBus},
+	{ID: "S7", Title: "Orders убивают посреди работы и запускают снова", extra: checksBus},
+	{ID: "S8", Title: "Доставка подтверждена: события приходят несколько раз", extra: checksS8, noOrders: true},
 }
 
 func scenarioByID(id string) *scenarioDef {
@@ -52,7 +57,7 @@ type orderReq struct {
 type sent struct {
 	N       int
 	At      time.Time // когда раннер отправил запрос
-	Phase   string    // "" | "down" | "after"
+	Phase   string    // "" | "down" | "after" | "kill" (S7: Orders убит, пока заказ в работе)
 	Req     orderReq
 	Latency time.Duration
 	Code    int
@@ -154,6 +159,20 @@ type runState struct {
 	// сценария не участвуют.
 	prev     map[string]bool
 	duration time.Duration
+	// started — начало сценария; killedAt — когда Orders убили (S7, S8),
+	// нулевое — не убивали.
+	started  time.Time
+	killedAt time.Time
+	// bonus — S8: ответы GET /users/{id}/bonus по покупателям; unknownUser —
+	// покупатель без начислений.
+	bonus       map[string]bonusResult
+	unknownUser string
+}
+
+// bonusResult — ответ GET /users/{id}/bonus: points или ошибка.
+type bonusResult struct {
+	Points int64
+	Err    string
 }
 
 // expected — сумма заказа по запросу раннера: Σ qty × price_cents.
@@ -244,6 +263,9 @@ func (rs *runState) allIDs() []string {
 	for id := range rs.facts.Payment.Charges.ByOrder {
 		extra = append(extra, id)
 	}
+	for id := range rs.facts.Bus.EventsByOrder {
+		extra = append(extra, id)
+	}
 	sort.Strings(extra)
 	for _, id := range extra {
 		if !rs.prev[id] {
@@ -307,16 +329,38 @@ func (r *runner) runScenario(def *scenarioDef) (*runState, error) {
 	if err := r.admin(http.MethodPost, "/admin/reset", nil); err != nil {
 		return nil, fmt.Errorf("сброс заглушек: %w", err)
 	}
+	if def.ID == "S8" {
+		return r.runS8(def, p, started)
+	}
 	pm := p.Payment
 	pm.BlackholeAfterS = 0
 	if def.ID == "S4" {
 		pm.BlackholeAfterS = p.DownAfterS
 	}
-	modes := map[string]any{"seed": r.params.Seed, "payment": pm, "label": def.ID + " · " + def.Title}
-	if err := r.admin(http.MethodPut, "/admin/modes", modes); err != nil {
-		return nil, fmt.Errorf("режимы заглушек: %w", err)
+	bus := p.Bus
+	bus.DownAfterS = 0
+	switch def.ID {
+	case "S6":
+		bus.DownAfterS = p.DownAfterS
+	case "S7":
+		// Шина недоступна до перезапуска Orders: окно с запасом, его
+		// закрывают следующие режимы.
+		bus.DownS = maxS
+	}
+	r.setLabel(def.ID + " · " + def.Title)
+	label := def.ID + " · " + def.Title
+	setModes := func(pm PaymentModes, bus BusModes) error {
+		modes := map[string]any{"seed": r.params.Seed, "payment": pm, "bus": bus, "label": label}
+		if err := r.admin(http.MethodPut, "/admin/modes", modes); err != nil {
+			return fmt.Errorf("режимы заглушек: %w", err)
+		}
+		return nil
+	}
+	if err := setModes(pm, bus); err != nil {
+		return nil, err
 	}
 	t0 := time.Now()
+	var killedAt time.Time
 
 	// Состав заказов детерминирован seed и номером сценария.
 	rnd := rand.New(rand.NewPCG(r.params.Seed, uint64(def.ID[1])))
@@ -334,8 +378,18 @@ func (r *runner) runScenario(def *scenarioDef) (*runState, error) {
 		waitAfter := r.flow(rnd, p.OrdersAfter, p.AfterRatePerS, "after", &orders, &mu)
 		waitDown()
 		waitAfter()
+	} else if def.ID == "S7" {
+		at, err := r.flowS7(p, rnd, pm, bus, setModes, &orders, &mu)
+		killedAt = at
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		r.flow(rnd, p.Orders, p.RatePerS, "", &orders, &mu)()
+	}
+	if def.ID == "S6" {
+		// Пауза — от конца отказа шины, а не от последнего заказа.
+		time.Sleep(time.Until(t0.Add(seconds(p.DownAfterS + p.Bus.DownS))))
 	}
 
 	time.Sleep(seconds(r.params.WaitS))
@@ -344,7 +398,7 @@ func (r *runner) runScenario(def *scenarioDef) (*runState, error) {
 	for id := range r.prev {
 		prev[id] = true
 	}
-	rs := &runState{params: r.params, orders: orders, prev: prev,
+	rs := &runState{params: r.params, orders: orders, prev: prev, killedAt: killedAt, started: started,
 		final: map[string]string{}, amounts: map[string]int64{}}
 	defer r.remember(rs)
 
@@ -395,6 +449,9 @@ func (r *runner) remember(rs *runState) {
 		r.prev[id] = true
 	}
 	for id := range rs.facts.Inventory.Reservations.ByOrder {
+		r.prev[id] = true
+	}
+	for id := range rs.facts.Bus.EventsByOrder {
 		r.prev[id] = true
 	}
 }

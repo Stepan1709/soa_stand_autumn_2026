@@ -20,6 +20,9 @@ func adminDo(t *testing.T, method, url, token, body string) (int, []byte, http.H
 	if token != "" {
 		req.Header.Set("X-Admin-Token", token)
 	}
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := c.Do(req)
 	if err != nil {
@@ -101,14 +104,14 @@ func TestEventsRing(t *testing.T) {
 		t.Fatalf("лента растёт: %d", len(st.events))
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/events?since=5", nil))
+	h.ServeHTTP(rec, localReq(http.MethodGet, "/admin/events?since=5"))
 	var out eventsResp
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if !out.Truncated || len(out.Events) != 100 || out.Events[0].Seq != 151 || out.Seq != 250 {
 		t.Fatalf("truncated=%v n=%d first=%d seq=%d", out.Truncated, len(out.Events), out.Events[0].Seq, out.Seq)
 	}
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/events?since=200", nil))
+	h.ServeHTTP(rec, localReq(http.MethodGet, "/admin/events?since=200"))
 	out = eventsResp{}
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if out.Truncated || len(out.Events) != 50 {
@@ -268,4 +271,11 @@ func TestRunnerProxy(t *testing.T) {
 	if _, err := newRunnerProxy("http://x/path"); err == nil {
 		t.Fatal("путь в RUNNER_UI_URL принят")
 	}
+}
+
+// localReq — запрос к стенду так, как его шлёт браузер на localhost.
+func localReq(method, path string) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	r.Host = "localhost:8090"
+	return r
 }

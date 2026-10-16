@@ -1,0 +1,40 @@
+{
+  "seed": 1,
+  "budget_ms": 1000,
+  "wait_s": 30,
+  "request_timeout_ms": 10000,
+  "scenarios": {
+    "S1": {
+      "orders": 50,
+      "rate_per_s": 10,
+      "payment": { "decline_rate": 0.1 }
+    },
+    "S6": {
+      "orders": 100,
+      "rate_per_s": 10,
+      "payment": { "decline_rate": 0.1 },
+      "bus": { "down_s": 60, "hang_rate": 0.5 },
+      "down_after_s": 2
+    },
+    "S7": {
+      "orders": 100,
+      "rate_per_s": 20,
+      "payment": { "decline_rate": 0.1 },
+      "bus": { "hang_rate": 0.5 },
+      "kill_orders": 5,
+      "kill_latency_ms": 3000,
+      "restart_s": 5,
+      "orders_after": 30,
+      "after_rate_per_s": 10
+    },
+    "S8": {
+      "events": 50,
+      "users": 10,
+      "max_copies": 3,
+      "parallel_rate": 0.3,
+      "rate_per_s": 10,
+      "kill_after_events": 25,
+      "restart_s": 5
+    }
+  }
+}

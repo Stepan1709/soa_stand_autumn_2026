@@ -54,6 +54,8 @@ services:
       DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
       PAYMENT_URL: http://mocks:8080
       INVENTORY_URL: http://mocks:8080
+      # Шина событий — задание 2 (необязательное).
+      EVENTS_URL: http://mocks:8080
     ports:
       - "127.0.0.1:${ORDERS_PORT:-8080}:8080"
     # Сырые сокеты сервису не нужны, повышать привилегии — тоже.
@@ -87,7 +89,9 @@ services:
   runner-ui:
     build: ./runner
     profiles: ["ui"]
-    command: ["-serve", ":8081", "-results", "/results/task_1.json", "-allow-from", "mocks-admin"]
+    # Результаты — в results/ui_task_N.* (N — задание прогона, {task} подставляет
+    # раннер): отчёты make scenarios (task_N.*) не затираются.
+    command: ["-serve", ":8081", "-results", "/results/ui_task_{task}.json", "-allow-from", "mocks-admin"]
     environment:
       ORDERS_URL: http://orders:8080
       MOCKS_URL: http://mocks-admin:8080
@@ -105,7 +109,7 @@ services:
     image: swaggerapi/swagger-ui:v5.17.14
     profiles: ["docs"]
     environment:
-      URLS: '[{"url": "./contracts/orders.yaml", "name": "Orders"}, {"url": "./contracts/payment.yaml", "name": "Payment"}, {"url": "./contracts/inventory.yaml", "name": "Inventory"}]'
+      URLS: '[{"url": "./contracts/orders.yaml", "name": "Orders"}, {"url": "./contracts/payment.yaml", "name": "Payment"}, {"url": "./contracts/inventory.yaml", "name": "Inventory"}, {"url": "./contracts/events.yaml", "name": "Events"}]'
       URLS_PRIMARY_NAME: Orders
       # Без внешнего валидатора: страница не ходит в интернет.
       VALIDATOR_URL: "none"

@@ -14,17 +14,20 @@ import (
 // Kind = "done" с Ref = seq запроса и итоговым исходом («client_closed» —
 // соединение закрыл клиент, не дождавшись ответа).
 type event struct {
-	Seq         int64     `json:"seq"`
-	At          time.Time `json:"at"`
-	Kind        string    `json:"kind,omitempty"` // "" — запрос, "done" — ответ на запрос Ref
-	Ref         int64     `json:"ref,omitempty"`
-	Service     string    `json:"service,omitempty"` // payment | inventory | orders
-	Method      string    `json:"method,omitempty"`
-	Path        string    `json:"path,omitempty"` // шаблон пути, без order_id
-	OrderID     string    `json:"order_id,omitempty"`
-	Outcome     string    `json:"outcome"`
-	AmountCents int64     `json:"amount_cents,omitempty"`
-	Wait        bool      `json:"wait,omitempty"`
+	Seq     int64     `json:"seq"`
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind,omitempty"` // "" — запрос, "done" — ответ на запрос Ref
+	Ref     int64     `json:"ref,omitempty"`
+	Service string    `json:"service,omitempty"` // payment | inventory | orders
+	Method  string    `json:"method,omitempty"`
+	Path    string    `json:"path,omitempty"` // шаблон пути, без order_id
+	OrderID string    `json:"order_id,omitempty"`
+	// EventID — у публикаций в шину (bus, /events): id события из тела, как
+	// в фактах events_by_order; пусто — тело не разобралось или id нет.
+	EventID     string `json:"event_id,omitempty"`
+	Outcome     string `json:"outcome"`
+	AmountCents int64  `json:"amount_cents,omitempty"`
+	Wait        bool   `json:"wait,omitempty"`
 	// Charged — запрос к Payment создал новое списание (засчитывается, когда
 	// у запроса есть исход: сразу или по событию done).
 	Charged bool `json:"charged,omitempty"`
@@ -70,8 +73,9 @@ func (s *state) eventsLocked() []event {
 type waiting struct {
 	run int
 	seq int64
-	idx int  // индекс в журнале s.reqs или s.gets
-	get bool // журнал: false — s.reqs, true — s.gets
+	idx int  // индекс в журнале s.reqs, s.gets или s.busLogs
+	get bool // журнал s.gets
+	bus bool // журнал s.busLogs
 }
 
 // finish отмечает конец задержанного запроса: в журнале фактов (done_at) и
@@ -84,7 +88,12 @@ func (s *state) finish(wt waiting, outcome string, clientClosed bool) {
 	if wt.run != s.run {
 		return
 	}
-	if wt.get {
+	if wt.bus {
+		if wt.idx < len(s.busLogs) {
+			s.busLogs[wt.idx].DoneAt = &now
+			s.busLogs[wt.idx].ClientClosed = clientClosed
+		}
+	} else if wt.get {
 		if wt.idx < len(s.gets) {
 			s.gets[wt.idx].DoneAt = &now
 			s.gets[wt.idx].ClientClosed = clientClosed
@@ -108,6 +117,8 @@ type eventsResp struct {
 	StartedAt time.Time `json:"started_at"`
 	Modes     modesView `json:"modes"`
 	Blackhole *window   `json:"blackhole,omitempty"`
+	// BusDown — окно отказа шины (режим bus.down_s), если задано.
+	BusDown *window `json:"bus_down,omitempty"`
 	// Seq — последний отданный seq: следующий запрос — ?since=Seq.
 	Seq  int64 `json:"seq"`
 	More bool  `json:"more"`
@@ -120,6 +131,11 @@ type eventsResp struct {
 	Sending *sendingView `json:"sending,omitempty"`
 	// OrdersEnabled — заглушкам задан адрес Orders: дашборд может слать заказы.
 	OrdersEnabled bool `json:"orders_enabled"`
+	// RunnerActive — идёт прогон раннера (make scenarios или из дашборда):
+	// ручные действия со страницы получают 409. RunnerSource — откуда
+	// прогон: cli | dashboard (пусто — неизвестно).
+	RunnerActive bool   `json:"runner_active"`
+	RunnerSource string `json:"runner_source,omitempty"`
 }
 
 type window struct {
@@ -144,6 +160,29 @@ type eventsSummary struct {
 		Held     int `json:"held"`
 		Released int `json:"released"`
 	} `json:"reservations"`
+	Bus busSummary `json:"bus"`
+	// Delivery — доставка delivery.confirmed в Orders; null — её не было.
+	Delivery *deliverySummary `json:"delivery"`
+}
+
+// busSummary — публикации order.paid в шину (POST /events).
+type busSummary struct {
+	Publish   int            `json:"publish"`    // всего POST /events
+	ByOutcome map[string]int `json:"by_outcome"` // 202 | 400 | 503 | hang
+	Accepted  int            `json:"accepted"`   // принято (202), включая копии
+	// OrdersWithEvent — заказов, по которым принято хотя бы одно событие.
+	OrdersWithEvent int `json:"orders_with_event"`
+	InDown          int `json:"in_down"` // запросов во время отказа шины
+}
+
+// deliverySummary — сводка доставки delivery.confirmed.
+type deliverySummary struct {
+	Events      int `json:"events"`       // событий в партии
+	Deliveries  int `json:"deliveries"`   // копий всего (с учётом redeliver)
+	AckedEvents int `json:"acked_events"` // событий с подтверждённой копией
+	Pending     int `json:"pending"`      // копий без ответа 2xx
+	Attempts    int `json:"attempts"`     // POST /webhooks/delivery всего
+	Users       int `json:"users"`        // покупателей в партии
 }
 
 // handleEvents — GET /admin/events?since=<seq>: лента для дашборда. Отдаёт
@@ -172,8 +211,12 @@ func (s *state) eventsSnapshotLocked(since int64) eventsResp {
 		Sending:       s.sendingLocked(),
 		OrdersEnabled: s.ordersURL != "",
 	}
+	out.RunnerActive, out.RunnerSource = s.runnerActiveLocked()
 	if from, until := s.blackholeLocked(); !until.IsZero() {
 		out.Blackhole = &window{from, until}
+	}
+	if from, until := s.busWindowLocked(); !until.IsZero() {
+		out.BusDown = &window{from, until}
 	}
 	if evs := s.eventsLocked(); len(evs) > 0 {
 		if since > 0 && since < evs[0].Seq-1 {
@@ -227,6 +270,33 @@ func (s *state) eventsSnapshotLocked(since int64) eventsResp {
 		} else {
 			sum.Reservations.Released++
 		}
+	}
+	sum.Bus.ByOutcome = map[string]int{}
+	for _, l := range s.busLogs {
+		sum.Bus.Publish++
+		sum.Bus.ByOutcome[l.Outcome]++
+		if l.Outcome == "202" {
+			sum.Bus.Accepted++
+		}
+		if l.Down {
+			sum.Bus.InDown++
+		}
+	}
+	sum.Bus.OrdersWithEvent = len(s.busByOrder)
+	if d := s.dlv; d != nil {
+		ds := &deliverySummary{Events: len(d.events)}
+		users := map[string]bool{}
+		for _, e := range d.events {
+			ds.Deliveries += e.Copies
+			ds.Pending += e.Copies - e.Acked
+			ds.Attempts += e.Attempts
+			if e.Acked > 0 {
+				ds.AckedEvents++
+			}
+			users[e.UserID] = true
+		}
+		ds.Users = len(users)
+		sum.Delivery = ds
 	}
 	return out
 }

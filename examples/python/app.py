@@ -2,6 +2,10 @@
 
 Оформление заказа: зарезервировать товар в Inventory, списать деньги в
 Payment, записать заказ в базу. Пока Payment и Inventory работают без отказов, всё работает.
+
+Задание 2 (необязательное): об оплаченном заказе сервис сообщает в шину
+событий (order.paid), а за подтверждённую доставку начисляет покупателю
+бонусы. Пока шина работает и Orders не падает, тоже всё работает.
 """
 
 import json
@@ -10,6 +14,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +25,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 DATABASE_URL = os.environ["DATABASE_URL"]
 PAYMENT_URL = os.environ["PAYMENT_URL"].rstrip("/")
 INVENTORY_URL = os.environ["INVENTORY_URL"].rstrip("/")
+# Шина событий; пусто — события не публикуются.
+EVENTS_URL = os.environ.get("EVENTS_URL", "").rstrip("/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orders")
@@ -32,6 +39,10 @@ CREATE TABLE IF NOT EXISTS orders (
     amount_cents BIGINT NOT NULL,
     items        JSONB NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS bonuses (
+    user_id TEXT PRIMARY KEY,
+    points  BIGINT NOT NULL
 )
 """
 
@@ -144,7 +155,42 @@ def create_order(body):
             (order_id, body["user_id"], status, amount, json.dumps(body["items"])),
         )
     log.info("order %s: %s", order_id, status)
+    if status == "paid":
+        publish_paid(order_id)
     return {"id": order_id, "status": status}
+
+
+def publish_paid(order_id):
+    """Сообщает в шину, что заказ оплачен."""
+    if not EVENTS_URL:
+        return
+    try:
+        code, _ = call("POST", f"{EVENTS_URL}/events", {
+            "id": str(uuid.uuid4()),
+            "type": "order.paid",
+            "order_id": order_id,
+            "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        if code != 202:
+            log.warning("order %s: событие не опубликовано (%s)", order_id, code)
+    except OSError as e:
+        log.warning("order %s: событие не опубликовано (%s)", order_id, e)
+
+
+def delivery_confirmed(event):
+    """Начисляет бонусы за подтверждённую доставку."""
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO bonuses (user_id, points) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET points = bonuses.points + EXCLUDED.points",
+            (event["user_id"], event["bonus_points"]),
+        )
+
+
+def get_bonus(user_id):
+    with db() as conn:
+        row = conn.execute("SELECT points FROM bonuses WHERE user_id = %s", (user_id,)).fetchone()
+    return {"points": row[0] if row else 0}
 
 
 def get_order(order_id):
@@ -158,6 +204,7 @@ def get_order(order_id):
 
 
 ORDER_PATH = re.compile(r"^/orders/([^/]+)$")
+BONUS_PATH = re.compile(r"^/users/([^/]+)/bonus$")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -180,16 +227,21 @@ class Handler(BaseHTTPRequestHandler):
             if order is None:
                 return self.send_json(404, {"error": "not_found"})
             return self.send_json(200, order)
+        m = BONUS_PATH.match(self.path)
+        if m:
+            return self.send_json(200, get_bonus(urllib.parse.unquote(m.group(1))))
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        if self.path != "/orders":
+        if self.path not in ("/orders", "/webhooks/delivery"):
             return self.send_json(404, {"error": "not_found"})
         length = int(self.headers.get("Content-Length") or 0)
         try:
             body = json.loads(self.rfile.read(length) or b"null")
         except ValueError:
             body = None
+        if self.path == "/webhooks/delivery":
+            return self.webhook(body)
         if not valid(body):
             return self.send_json(400, {"error": "bad_request"})
         try:
@@ -197,6 +249,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             log.exception("POST /orders")
             self.send_json(500, {"error": "internal", "message": str(e)})
+
+    def webhook(self, body):
+        if not isinstance(body, dict) or not isinstance(body.get("user_id"), str) \
+                or not isinstance(body.get("bonus_points"), int) or body["bonus_points"] <= 0:
+            return self.send_json(400, {"error": "bad_request"})
+        try:
+            delivery_confirmed(body)
+        except Exception as e:
+            log.exception("POST /webhooks/delivery")
+            return self.send_json(500, {"error": "internal", "message": str(e)})
+        self.send_json(200, {"status": "ok"})
 
     def log_message(self, fmt, *args):
         pass
