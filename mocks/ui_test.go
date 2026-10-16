@@ -35,6 +35,9 @@ func getEvents(t *testing.T, url, token string, since int64) (int, eventsResp) {
 func call(t *testing.T, method, url, body string) int {
 	t.Helper()
 	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +78,7 @@ func TestUIWithoutTokenDataWithToken(t *testing.T) {
 func TestUIPageNoHints(t *testing.T) {
 	low := strings.ToLower(string(uiPage))
 	for _, w := range []string{"ключ", "lookup", "таймаут", "повтор", "идемпот", "размыкат", "seed", "has_key",
-		"idempotency", "http://", "https://", "innerhtml", "eval("} {
+		"idempotency", "outbox", "inbox", "http://", "https://", "innerhtml", "eval("} {
 		if strings.Contains(low, w) {
 			t.Fatalf("в ui.html %q", w)
 		}
@@ -240,7 +243,7 @@ func TestEventsPaging(t *testing.T) {
 	}
 	get := func(since int64) eventsResp {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/events?since=%d", since), nil))
+		h.ServeHTTP(rec, localReq(http.MethodGet, fmt.Sprintf("/admin/events?since=%d", since)))
 		var out eventsResp
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 			t.Fatal(err)
@@ -276,7 +279,18 @@ func TestUIControls(t *testing.T) {
 	page := string(uiPage)
 	for _, want := range []string{"/admin/modes", "/admin/reset", "/admin/orders", "/admin/orders/check",
 		"/admin/runner/run", "/admin/runner/status", "/admin/runner/report", "/admin/runner/params",
-		"Прогнать все (S1–S5)", "Отчёт HTML", "Итог (GET)", "make scenarios"} {
+		"Прогнать все (S1–S5)", "Отчёт HTML", "Итог (GET)", "make scenarios",
+		"'X-Stand-Client': 'ui'", "runner_active", "Идёт прогон make scenarios",
+		"Отправка прервана: журнал очищен", "Отправка прервана: начался прогон", "2,5 мин", "открыть отчёт",
+		"headers['Content-Type'] = 'application/json'",
+		// Задание 2: шина и доставка.
+		"/admin/bus/deliver", "/admin/bus/redeliver", "/admin/bus/balances", "/admin/runner/params?task=",
+		"/admin/runner/report?task=", "task: task, ids: ids, wait_s: wait", "Шина событий", "Доля висящих запросов",
+		"Убрать отказ", "как в S6", "Доставка (задание 2)", "Доставить события", "Прислать копии ещё раз",
+		"Проверить балансы", "должно быть 0", "Публикаций в шину", "Заказов с событием", "<th>Событие</th>",
+		"paid без события", "разные id события", "bus_down", "Прогнать S1 и S6",
+		"S7 и S8 — только <code>make scenarios TASK=2</code> (они перезапускают Orders)",
+		"payment: payment, bus: bus", "curModes('bus')", "curModes('payment')"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("в ui.html нет %q", want)
 		}

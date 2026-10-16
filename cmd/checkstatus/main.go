@@ -30,6 +30,8 @@ const (
 func main() {
 	results := flag.String("results", "", "каталог результатов cmd/grade")
 	task := flag.String("task", "", "задание, например task_1")
+	cfgPath := flag.String("config", ".etc/config.json", "конфигурация стенда: какие задания необязательные")
+	checkRun := flag.String("check-run", "", "необязательное задание: записать сюда тело запроса к Checks API (success или neutral) и не падать")
 	flag.Parse()
 	if *results == "" || *task == "" {
 		fmt.Fprintln(os.Stderr, "usage: checkstatus --results DIR --task task_1")
@@ -47,15 +49,34 @@ func main() {
 
 	token := randomToken()
 	summary := os.Getenv("GITHUB_STEP_SUMMARY")
+	opt := optional(*cfgPath, *task)
 	if guard.CheckCode != "0" {
-		msg := fmt.Sprintf("нарушено правило файлов: %v\n\nОтличаться от upstream master может только orders/ (и .gitignore): синхронизируйте форк и откатите остальные изменения.", guard.Report["error"])
+		msg := fmt.Sprintf("нарушено правило файлов: %v\n\nМенять можно только orders/ (и .gitignore): верните остальные файлы как в исходном репозитории.", guard.Report["error"])
 		fmt.Printf("%s: FAIL\n", *task)
 		fmt.Print(stdoutBlock(token, msg))
 		appendSummary(summary, summaryBlock(*task, "FAIL", "", msg))
+		if *checkRun != "" && opt {
+			// Необязательное задание и здесь — серый check, job не падает:
+			// красным нарушение покажет check обязательного задания.
+			writeCheckRun(*checkRun, *task, "fail", summaryBlock(*task, "FAIL", "", msg))
+			return
+		}
 		os.Exit(1)
 	}
 	status := report["soa_stand/tasks/"+*task].Status
 	body, note := runnerOutput(*results, *task)
+	if opt {
+		note = strings.TrimSpace("Задание необязательное: на итог проверки и допуск не влияет; если вы его не делали, «не пройдено» здесь ожидаемо. " + note)
+	}
+	if *checkRun != "" && opt {
+		// Необязательное задание — отдельный check: зелёный, если пройдено,
+		// иначе серый neutral; job при этом не падает.
+		writeCheckRun(*checkRun, *task, status, summaryBlock(*task, strings.ToUpper(status), note, body))
+		fmt.Printf("%s: %s (необязательное)\n", *task, sanitize(status))
+		fmt.Print(stdoutBlock(token, body))
+		appendSummary(summary, summaryBlock(*task, strings.ToUpper(status), note, body))
+		return
+	}
 	fmt.Printf("%s: %s\n", *task, sanitize(status))
 	if note != "" {
 		fmt.Println(note)
@@ -66,6 +87,46 @@ func main() {
 		fmt.Printf("полный журнал: артефакт soa-results, файл %s.log\n", *task)
 		os.Exit(1)
 	}
+}
+
+// maxCheckSummary — предел output.summary в Checks API (65535) с запасом.
+const maxCheckSummary = 60000
+
+// writeCheckRun пишет тело POST /repos/{repo}/check-runs (без head_sha — его
+// добавляет workflow): success, если задание пройдено, иначе neutral.
+func writeCheckRun(path, task, status, summaryText string) {
+	conclusion, title := "neutral", task+": не пройдено (необязательное)"
+	if status == "pass" {
+		conclusion, title = "success", task+": пройдено полностью"
+	}
+	if len(summaryText) > maxCheckSummary {
+		summaryText = strings.ToValidUTF8(summaryText[:maxCheckSummary], "") + "\n…</pre>"
+	}
+	b, _ := json.Marshal(map[string]any{
+		"name": task + " (необязательное)", "status": "completed", "conclusion": conclusion,
+		"output": map[string]string{"title": title, "summary": summaryText},
+	})
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+}
+
+// optional — задание помечено необязательным в конфигурации стенда.
+func optional(path, task string) bool {
+	var cfg struct {
+		Optional []string `json:"optional"`
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(b, &cfg) != nil {
+		return false
+	}
+	for _, t := range cfg.Optional {
+		if t == task {
+			return true
+		}
+	}
+	return false
 }
 
 // runnerOutput — итоговый отчёт раннера (task_N/task_N.txt). Если его нет,

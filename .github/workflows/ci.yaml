@@ -1,7 +1,7 @@
 name: soa-grade
 # Имя репозитория курса (ippaveln/soa_stand_autumn_2026) — в .etc/config.json;
 # выражения `if:` и `repository:` не читают файлы, поэтому здесь оно повторено
-# ниже (self-test `if:`, checkout `repository:`). Переименовали репозиторий — поменяйте и тут.
+# ниже (self-test и grade `if:`, checkout `repository:`). Переименовали репозиторий — поменяйте и тут.
 on:
   push:
     branches: [master]
@@ -53,31 +53,48 @@ jobs:
         run: make scenarios ONLY=S1 WAIT=3
       - name: Naive Python example passes S1
         run: make scenarios ONLY=S1 WAIT=3 ORDERS_DIR=./examples/python
+      - name: Naive Go example passes S1 of task 2
+        run: make scenarios TASK=2 ONLY=S1 WAIT=3 ORDERS_DIR=./examples/go
+      - name: Orders restart works (S7 runs to the end on the naive example)
+        # Наивный пример S7 не проходит, но сценарий должен доиграть без
+        # ошибки стенда: make перезапускает Orders по просьбе раннера.
+        run: |
+          make scenarios TASK=2 ONLY=S7 WAIT=3 ORDERS_DIR=./examples/go || true
+          jq -e '.scenarios[0].id == "S7" and (.scenarios[0].error // "") == "" and .scenarios[0].pass == false' results/task_2.json
       - name: Stop stand
         if: ${{ always() }}
         run: make down
 
   grade:
     # Официальная проверка PR идёт в репозитории курса, его workflow.
-    # Этот job красный, пока не пройдены все включённые задания (в том числе
-    # до срока следующего). Официальный результат по заданию — check task_N.
+    # Этот job красный, пока не пройдены все включённые обязательные задания;
+    # необязательные (задание 2) на него не влияют. Результат по заданию —
+    # check task_N.
+    # Push в master репозитория курса — изменения стенда: их проверяет
+    # self-test, а grade наивного orders/ был бы заведомо красным.
+    if: ${{ !(github.event_name == 'push' && github.repository == 'ippaveln/soa_stand_autumn_2026') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
+      # Полная история обоих: правило файлов сравнивает кандидата с репозиторием
+      # курса в точке, от которой он отходит (merge-base), — обновления стенда
+      # не краснят несинхронизированные форки.
       - uses: actions/checkout@v6
         with:
           repository: ippaveln/soa_stand_autumn_2026
           ref: master
           path: baseline
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
+          fetch-depth: 0
           persist-credentials: false
           # Код форка здесь — только данные: у job токен только на чтение и нет
           # секретов; из кандидата берётся одна директория orders/, она
@@ -87,7 +104,7 @@ jobs:
         with:
           go-version-file: baseline/go.mod
           cache: false
-      - name: Grade with instructor stand and scenarios
+      - name: Сборка orders/ и сценарии на стенде курса
         # Заглушки, раннер, compose и сценарии — из baseline; из кандидата — только orders/.
         working-directory: baseline
         run: go run ./cmd/grade --baseline . --candidate ../candidate --out ../results
@@ -97,7 +114,7 @@ jobs:
           name: soa-results
           path: results
           if-no-files-found: error
-      - name: Deliver analytics
+      - name: Сводка в аналитику курса
         # Отчитывается каждый прогон, включая форки; github.workflow_repository
         # отличает официальную проверку от прогона в форке. Если grade не дошёл
         # до отчёта, минимальная запись всё равно отмечает попытку.
@@ -119,12 +136,12 @@ jobs:
 
   task:
     needs: grade
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.grade.result != 'skipped' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Включённые задания — как в .etc/config.json "tasks".
+        # Обязательные задания — как в .etc/config.json "tasks" без "optional".
         id: ['1']
     name: task_${{ matrix.id }}
     steps:
@@ -142,8 +159,49 @@ jobs:
         with:
           name: soa-results
           path: results
-      - name: Require explicit pass and valid file policy
+      - name: Итог задания и правило файлов
         env:
           TASK_ID: ${{ matrix.id }}
         working-directory: baseline
         run: go run ./cmd/checkstatus --results ../results --task "task_${TASK_ID}"
+
+  # Задание 2 необязательное ("optional" в .etc/config.json): его итог —
+  # отдельный check «task_2 (необязательное)»: зелёный, если пройдено
+  # полностью, иначе серый neutral. Этот job не падает и итог PR не меняет.
+  # Право checks: write — только здесь; код студента в этом job не запускается.
+  task_2:
+    needs: grade
+    if: ${{ !cancelled() && needs.grade.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    name: task_2 · публикация check
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ippaveln/soa_stand_autumn_2026
+          ref: master
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: baseline/go.mod
+          cache: false
+      - uses: actions/download-artifact@v6
+        with:
+          name: soa-results
+          path: results
+      - name: Отчёт по заданию 2 (необязательное)
+        working-directory: baseline
+        run: go run ./cmd/checkstatus --results ../results --task task_2 --check-run ../check-run.json
+      - name: Публикация check «task_2 (необязательное)»
+        # Не удалось создать check — отчёт всё равно в summary этого job;
+        # красным он из-за этого не становится.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          jq --arg sha "$HEAD_SHA" '. + {head_sha: $sha}' check-run.json | gh api "repos/$REPO/check-runs" --input - --jq .html_url

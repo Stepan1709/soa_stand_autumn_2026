@@ -1,7 +1,8 @@
 {
   "version": "1.0.0",
   "stream": "soa-2026-autumn",
-  "tasks": ["task_1"],
+  "tasks": ["task_1", "task_2"],
+  "optional": ["task_2"],
   "diff": {
     "original": {
       "repo": "ippaveln/soa_stand_autumn_2026",

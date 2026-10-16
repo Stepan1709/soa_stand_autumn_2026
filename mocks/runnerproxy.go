@@ -33,13 +33,14 @@ func newRunnerProxy(base string) (http.Handler, error) {
 			pr.SetURL(u)
 			pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, "/admin/runner")
 			pr.Out.URL.RawPath = ""
-			pr.Out.URL.RawQuery = ""
+			pr.Out.URL.RawQuery = runnerQuery(pr.In.URL.Query())
 			pr.Out.Header.Del("Cookie")
 		},
 		Transport: &http.Transport{
 			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
 			ResponseHeaderTimeout: 10 * time.Second,
 			MaxIdleConns:          4,
+			IdleConnTimeout:       30 * time.Second,
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			h := resp.Header
@@ -57,6 +58,16 @@ func newRunnerProxy(base string) (http.Handler, error) {
 	return p, nil
 }
 
+// runnerQuery — из параметров запроса в сервис прогонов уходит только
+// task=1 или task=2 (какое задание), остальное отбрасывается.
+func runnerQuery(q url.Values) string {
+	switch t := q.Get("task"); t {
+	case "1", "2":
+		return "task=" + t
+	}
+	return ""
+}
+
 func (s *state) handleRunner(w http.ResponseWriter, r *http.Request) {
 	m, ok := runnerPaths[r.URL.Path]
 	if !ok {
@@ -72,5 +83,11 @@ func (s *state) handleRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<12)
+	if r.URL.Path == "/admin/runner/run" {
+		// «Прогнать» со страницы во время make scenarios — тоже ручное
+		// действие: два прогона испортили бы друг другу проверку.
+		s.manual(s.runnerUI.ServeHTTP)(w, r)
+		return
+	}
 	s.runnerUI.ServeHTTP(w, r)
 }

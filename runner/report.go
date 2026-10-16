@@ -79,6 +79,10 @@ const maxOrdersInReport = 20
 
 func buildView(res *scenarioResult, rs *runState) *scenarioView {
 	v := &scenarioView{Latency: latencyView(rs)}
+	if rs.bonus != nil {
+		// S8: в проверках покупатели, а не заказы — истории только в журнале.
+		return v
+	}
 	var ids []string
 	checksOf := map[string][]string{}
 	for _, c := range res.Checks {
@@ -405,9 +409,9 @@ details > summary { cursor:pointer; }
       <line class="axis" x1="0" y1="{{.H}}" x2="{{.W}}" y2="{{.H}}"></line>
       {{range .Bars}}<rect class="bar{{if .Over}} over{{end}}" x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}"><title>{{.Title}}</title></rect>{{end}}
       <line class="budget" x1="{{.BudgetX}}" y1="0" x2="{{.BudgetX}}" y2="{{.H}}"></line>
-      <text x="{{.BudgetX}}" y="11" dx="4">бюджет {{.BudgetMS}} мс</text>
+      <text x="{{.BudgetX}}" y="11" dx="4">предел {{.BudgetMS}} мс</text>
     </svg>
-    <div class="legend">0 … {{.TopLabel}}; ответов {{.Count}}{{if .Median}}, медиана {{.Median}}, максимум {{.Max}}{{end}}; дольше бюджета или без ответа: {{.OverCount}}{{if .NoResp}}, из них без ответа: {{.NoResp}}{{end}}</div>
+    <div class="legend">0 … {{.TopLabel}}; ответов {{.Count}}{{if .Median}}, медиана {{.Median}}, максимум {{.Max}}{{end}}; дольше предела или без ответа: {{.OverCount}}{{if .NoResp}}, из них без ответа: {{.NoResp}}{{end}}</div>
   {{end}}</div>
   {{if .Orders}}
   <h3>Проблемные заказы</h3>

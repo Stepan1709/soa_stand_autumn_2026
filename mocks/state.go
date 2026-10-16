@@ -17,6 +17,8 @@ import (
 type Modes struct {
 	Seed    uint64       `json:"seed"`
 	Payment PaymentModes `json:"payment"`
+	// Bus — шина событий (задание 2), bus.go.
+	Bus BusModes `json:"bus"`
 	// Label — подпись текущего сценария для дашборда (/ui), её ставит
 	// раннер; при ручных экспериментах пусто или «ручной режим».
 	Label string `json:"label,omitempty"`
@@ -31,10 +33,11 @@ type modesView struct {
 	Label    string       `json:"label"`
 	Finished bool         `json:"finished,omitempty"`
 	Payment  PaymentModes `json:"payment"`
+	Bus      BusModes     `json:"bus"`
 }
 
 func (m Modes) view() modesView {
-	return modesView{Label: m.Label, Finished: m.Finished, Payment: m.Payment}
+	return modesView{Label: m.Label, Finished: m.Finished, Payment: m.Payment, Bus: m.Bus}
 }
 
 // maxLabel — предел длины label, символов.
@@ -175,6 +178,8 @@ type state struct {
 	// отправка выключена. runnerUI — сервис прогонов из дашборда (make ui).
 	ordersURL string
 	runnerUI  http.Handler
+	// now — часы для признака «идёт прогон» (в тестах подменяются); nil — time.Now.
+	now func() time.Time
 
 	mu sync.Mutex
 
@@ -202,10 +207,29 @@ type state struct {
 	resv         map[string]*reservation
 	resvRequests map[string]int
 
+	// Шина (bus.go): busN — счётчик запросов во время отказа (вход генератора
+	// случайностей), busSeen — принятые пары order_id+id, busByOrder — разные
+	// id событий по заказу, dlv — доставка delivery.confirmed в Orders.
+	busN       uint64
+	busLogs    []busLog
+	busSeen    map[string]bool
+	busByOrder map[string][]string
+	dlv        *delivery
+	// bonusExpected — ожидаемый бонусный баланс покупателя: bonus_points по
+	// всем партиям /admin/bus/deliver с reset (Orders копит баланс по всем).
+	bonusExpected map[string]int
+	dlvBatch      uint64 // партий /admin/bus/deliver с reset
+
 	// Заказы с дашборда: текущая отправка и id, полученные от Orders.
 	send     *sending
 	known    []string
 	knownSet map[string]bool
+	checking bool // идёт POST /admin/orders/check
+	// balancing — идёт POST /admin/bus/balances (balances.go).
+	balancing bool
+
+	// owner — владелец прогона раннера: идёт ли прогон (runlock.go).
+	owner runOwner
 }
 
 func newState(m Modes) *state {
@@ -235,6 +259,19 @@ func (s *state) resetLocked() {
 	s.invLogs = nil
 	s.resv = map[string]*reservation{}
 	s.resvRequests = map[string]int{}
+	s.busN = 0
+	s.busLogs = nil
+	s.busSeen = map[string]bool{}
+	s.busByOrder = map[string][]string{}
+	s.bonusExpected = map[string]int{}
+	s.dlvBatch = 0
+	if s.dlv != nil {
+		s.dlv.cancel()
+		s.dlv = nil
+	}
+	// Ручная отправка заказов с дашборда прерывается: её заказы не должны
+	// попасть в новый журнал.
+	s.stopSendingLocked(stopReset)
 	s.known = nil
 	s.knownSet = map[string]bool{}
 }
@@ -283,11 +320,22 @@ func (s *state) handleSetModes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if err := m.Bus.validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	if n := len([]rune(m.Label)); n > maxLabel {
 		writeErr(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("label: не длиннее %d символов", maxLabel))
 		return
 	}
 	s.mu.Lock()
+	// Метка конца прогона — finished; любые другие режимы от раннера —
+	// прогон идёт. Чужой прогон раннер не трогает.
+	if isRunner(r) && !s.runnerGateLocked(r, m.Finished) {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "runner_active", otherRunMsg)
+		return
+	}
 	s.applyModesLocked(m)
 	out := s.modes.view()
 	s.mu.Unlock()
@@ -301,8 +349,13 @@ func (s *state) handleGetModes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *state) handleReset(w http.ResponseWriter, _ *http.Request) {
+func (s *state) handleReset(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
+	if isRunner(r) && !s.runnerGateLocked(r, false) {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "runner_active", otherRunMsg)
+		return
+	}
 	s.resetLocked()
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
@@ -313,6 +366,7 @@ type Facts struct {
 	Modes     modesView      `json:"modes"`
 	Payment   PaymentFacts   `json:"payment"`
 	Inventory InventoryFacts `json:"inventory"`
+	Bus       BusFacts       `json:"bus"`
 }
 
 type PaymentFacts struct {
@@ -423,6 +477,7 @@ func (s *state) factsLocked() Facts {
 			inv.Reservations.Released++
 		}
 	}
+	f.Bus = s.busFactsLocked()
 	return f
 }
 

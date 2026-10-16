@@ -13,6 +13,7 @@
 package main
 
 import (
+	"archive/tar"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -32,14 +33,17 @@ import (
 )
 
 // allTasks — все задания курса; включённые перечислены в .etc/config.json.
-var allTasks = []string{"task_1"}
+var allTasks = []string{"task_1", "task_2"}
 
 const reportPrefix = "soa_stand/tasks/"
 
 type config struct {
 	Stream string   `json:"stream"`
 	Tasks  []string `json:"tasks"`
-	Diff   struct {
+	// Optional — необязательные из включённых: гоняются и показываются, но
+	// на итог проверки (код выхода grade) не влияют.
+	Optional []string `json:"optional"`
+	Diff     struct {
 		Original struct {
 			Repo string `json:"repo"`
 			Ref  string `json:"ref"`
@@ -119,10 +123,14 @@ func main() {
 	report := initialReport()
 	outcome := taskOutcome{scenarios: map[string]scenarioSummary{}, levels: map[string]string{}}
 	guard := guardResult{CheckCode: "1", Report: map[string]any{}}
-	if changed, err := checkPolicy(baseline, candidate, cfg); err != nil {
+	policy, cleanup, how := policyBase(baseline, candidate)
+	changed, err := checkPolicy(policy, candidate, cfg)
+	cleanup()
+	if err != nil {
 		guard.Report["error"] = err.Error()
+		guard.Report["compared_with"] = how
 	} else {
-		guard = guardResult{CheckCode: "0", Report: map[string]any{"changed_paths": changed}}
+		guard = guardResult{CheckCode: "0", Report: map[string]any{"changed_paths": changed, "compared_with": how}}
 		report, outcome = runTasks(baseline, candidate, out, params, cfg)
 	}
 
@@ -136,8 +144,9 @@ func main() {
 			"actor": os.Getenv("GITHUB_ACTOR"), "run_id": os.Getenv("GITHUB_RUN_ID"), "run_attempt": os.Getenv("GITHUB_RUN_ATTEMPT"),
 			"workflow_repository": os.Getenv("GITHUB_REPOSITORY"), "event": os.Getenv("GITHUB_EVENT_NAME"),
 		},
-		"baseline":    map[string]string{"repo": cfg.Diff.Original.Repo, "ref": cfg.Diff.Original.Ref},
-		"config":      map[string]int{"allow_list_count": 1, "tasks_enabled": len(cfg.Tasks)},
+		"baseline": map[string]string{"repo": cfg.Diff.Original.Repo, "ref": cfg.Diff.Original.Ref},
+		"config": map[string]any{"allow_list_count": 1, "tasks_enabled": len(cfg.Tasks),
+			"tasks_optional": append([]string{}, cfg.Optional...)},
 		"guard":       guard,
 		"test_report": report,
 		"scenarios":   outcome.scenarios,
@@ -167,6 +176,11 @@ func readConfig(path string) (config, error) {
 			return c, fmt.Errorf("unknown task in config: %s", t)
 		}
 	}
+	for _, t := range c.Optional {
+		if !contains(c.Tasks, t) {
+			return c, fmt.Errorf("optional task not enabled: %s", t)
+		}
+	}
 	return c, nil
 }
 
@@ -178,8 +192,12 @@ func initialReport() map[string]packageResult {
 	return r
 }
 
+// allEnabledPass — прошли все включённые обязательные задания.
 func allEnabledPass(report map[string]packageResult, cfg config) bool {
 	for _, t := range cfg.Tasks {
+		if contains(cfg.Optional, t) {
+			continue
+		}
 		if report[reportPrefix+t].Status != "pass" {
 			return false
 		}
@@ -196,10 +214,128 @@ func printSummary(guard guardResult, report map[string]packageResult, out string
 	for _, t := range allTasks {
 		fmt.Printf("%s: %s\n", t, report[reportPrefix+t].Status)
 	}
+	fmt.Println("итог проверки — по обязательным заданиям; необязательные на него не влияют")
 	fmt.Printf("results: %s\n", out)
 }
 
 // ---------- правило файлов ----------
+
+// policyBase — с чем сравнивать кандидата по правилу файлов: дерево
+// репозитория курса в той точке, от которой отходит кандидат (merge-base его
+// HEAD и HEAD baseline). Так обновление стенда в репозитории курса не делает
+// запрещёнными файлы, которые студент не трогал, а только не успел
+// синхронизировать форк. Нет истории git или общей точки — сам baseline.
+// how — с чем сравнили (для отчёта).
+func policyBase(baseline, candidate string) (dir string, cleanup func(), how string) {
+	fallback := func(why string) (string, func(), string) {
+		return baseline, func() {}, "baseline (" + why + ")"
+	}
+	head, err := gitOut(baseline, "rev-parse", "HEAD")
+	if err != nil {
+		return fallback("нет истории репозитория курса")
+	}
+	const ref = "refs/soa-grade/upstream"
+	if _, err := gitOut(candidate, "fetch", "--quiet", "--no-tags", baseline, "+HEAD:"+ref); err != nil {
+		return fallback("нет истории кандидата")
+	}
+	defer func() { _, _ = gitOut(candidate, "update-ref", "-d", ref) }()
+	mb, err := gitOut(candidate, "merge-base", "HEAD", ref)
+	if err != nil {
+		return fallback("нет общей точки с репозиторием курса")
+	}
+	if mb == head {
+		return baseline, func() {}, "upstream " + short(mb)
+	}
+	tmp, err := os.MkdirTemp("", "soa-policy-")
+	if err != nil {
+		return fallback(err.Error())
+	}
+	if err := gitArchive(candidate, mb, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return fallback("git archive: " + err.Error())
+	}
+	return tmp, func() { os.RemoveAll(tmp) }, "upstream " + short(mb) + " (merge-base)"
+}
+
+// gitArgs — без хуков и с локальными путями: кандидат — только данные.
+var gitArgs = []string{"-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=always"}
+
+func gitOut(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append(append([]string{"-C", dir}, gitArgs...), args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// gitArchive раскладывает дерево коммита rev в dir: только каталоги и
+// обычные файлы.
+func gitArchive(repo, rev, dir string) error {
+	cmd := exec.Command("git", append(append([]string{"-C", repo}, gitArgs...), "archive", "--format=tar", rev)...)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	tr := tar.NewReader(out)
+	var extractErr error
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			extractErr = err
+			break
+		}
+		name := filepath.FromSlash(h.Name)
+		if !filepath.IsLocal(name) {
+			extractErr = fmt.Errorf("путь вне дерева: %q", h.Name)
+			break
+		}
+		target := filepath.Join(dir, name)
+		switch h.Typeflag {
+		case tar.TypeDir:
+			extractErr = os.MkdirAll(target, 0o755)
+		case tar.TypeReg:
+			extractErr = writeFrom(target, tr)
+		case tar.TypeXGlobalHeader:
+		default:
+			extractErr = fmt.Errorf("не обычный файл: %q", h.Name)
+		}
+		if extractErr != nil {
+			break
+		}
+	}
+	_, _ = io.Copy(io.Discard, out)
+	if err := cmd.Wait(); err != nil && extractErr == nil {
+		extractErr = err
+	}
+	return extractErr
+}
+
+func writeFrom(path string, r io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func short(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
 
 // checkPolicy: кандидат отличается от baseline только внутри orders/.
 // .gitignore может отличаться свободно — в проверку он не попадает.

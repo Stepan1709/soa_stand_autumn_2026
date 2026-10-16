@@ -51,6 +51,11 @@ func commonChecks(p *Params, rs *runState) []check {
 	}
 	for _, s := range rs.orders {
 		label := s.label()
+		// Заказы, которые были в работе, когда Orders убили (S7): ответа на
+		// них и не могло быть; их деньги и итог проверяются ниже, как у всех.
+		if s.Phase == "kill" {
+			continue
+		}
 		if s.Code >= 500 {
 			c5xx = append(c5xx, label)
 		}
@@ -110,14 +115,14 @@ func commonChecks(p *Params, rs *runState) []check {
 	}
 
 	slowC := newCheck(fmt.Sprintf("каждый ответ на POST /orders не дольше %d мс", p.BudgetMS), slow,
-		fmt.Sprintf("%d из %d ответов дольше %d мс или без ответа, максимум %s", len(slow), len(rs.orders), p.BudgetMS, secs(maxLat)))
+		fmt.Sprintf("%d из %d ответов дольше %d мс или без ответа, максимум %s", len(slow), rs.answerable(), p.BudgetMS, secs(maxLat)))
 	slowC.kind = kindBudget
 	doubleC := newCheck("ни одного заказа с двумя списаниями", double,
 		fmt.Sprintf("заказов с 2+ списаниями: %d", len(double)))
 	doubleC.kind = kindDouble
 
 	return []check{
-		newCheck("ни одного 5xx на POST /orders", c5xx, fmt.Sprintf("ответов 5xx: %d из %d", len(c5xx), len(rs.orders))),
+		newCheck("ни одного 5xx на POST /orders", c5xx, fmt.Sprintf("ответов 5xx: %d из %d", len(c5xx), rs.answerable())),
 		slowC,
 		newCheck("ответы Orders по контракту", invalid, fmt.Sprintf("нарушений: %d", len(invalid))),
 		doubleC,
@@ -300,6 +305,9 @@ func journal(rs *runState, def *scenarioDef) []string {
 	if def.ID == "S4" {
 		out = append(out, fmt.Sprintf("запросов к Payment за время отказа: %d", rs.downRequests()))
 	}
+	if busScenario(def) {
+		out = append(out, journalBus(rs, def)...)
+	}
 	if notFound > 0 {
 		out = append(out, fmt.Sprintf("списания по заказам, которых Orders не знает (GET 404): %d", notFound))
 	}
@@ -345,6 +353,9 @@ func orderStory(rs *runState, id string) string {
 	parts = append(parts, fmt.Sprintf("списаний %d", f.Payment.Charges.ByOrder[id]))
 	if rv := f.Inventory.Reservations.ByOrder[id]; rv != "" {
 		parts = append(parts, "резерв "+rv)
+	}
+	if rs.facts.Bus.Requests.Total > 0 {
+		parts = append(parts, fmt.Sprintf("событий в шине %d", len(f.Bus.EventsByOrder[id])))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -433,6 +444,16 @@ func keyFacts(rs *runState) map[string]int {
 		"charged_orders":            len(f.Payment.Charges.ByOrder),
 		"declines":                  f.Payment.Declines.Total,
 	}
+	if b := f.Bus; b.Requests.Total > 0 {
+		m["bus_publish"] = b.Requests.Total
+		m["bus_publish_down"] = b.Requests.InDown
+		m["bus_accepted"] = b.Accepted
+		for id := range b.EventsByOrder {
+			if !rs.prev[id] {
+				m["bus_orders_with_event"]++
+			}
+		}
+	}
 	for _, s := range rs.orders {
 		switch {
 		case s.Err != "":
@@ -471,4 +492,16 @@ func keyFacts(rs *runState) map[string]int {
 		}
 	}
 	return m
+}
+
+// answerable — заказы, на которые Orders мог ответить (без убитых посреди
+// работы в S7).
+func (rs *runState) answerable() int {
+	n := 0
+	for _, s := range rs.orders {
+		if s.Phase != "kill" {
+			n++
+		}
+	}
+	return n
 }

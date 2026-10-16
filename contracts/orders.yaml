@@ -3,12 +3,13 @@ info:
   title: Orders
   version: "1.0"
   description: |
-    Сервис оформления заказов — его пишете вы. Раннер сценариев обращается
-    только к этим трём эндпоинтам.
+    Сервис оформления заказов — его пишете вы. В задании 1 раннер сценариев
+    обращается только к `/healthz` и `/orders`; `/webhooks/delivery` и
+    `/users/{id}/bonus` нужны только для задания 2 (необязательного).
 
     Сервис слушает порт из переменной `PORT` (по умолчанию `8080`). Адреса
-    Payment, Inventory и базы — в переменных окружения `DATABASE_URL`, `PAYMENT_URL`,
-    `INVENTORY_URL`.
+    Payment, Inventory, шины событий и базы — в переменных окружения
+    `DATABASE_URL`, `PAYMENT_URL`, `INVENTORY_URL`, `EVENTS_URL`.
 servers:
   - url: http://localhost:8080
 paths:
@@ -73,8 +74,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /webhooks/delivery:
+    post:
+      summary: Подтверждение доставки (задание 2)
+      description: |
+        Сюда шина доставляет событие `delivery.confirmed` (контракт Events).
+        Шина доставляет его раз в секунду, пока не получит `2xx`; одно
+        событие может прийти несколько раз, в том числе одновременно.
+        На уже обработанное событие тоже отвечайте `2xx`.
+
+        Бонусы по каждому событию начисляются покупателю `user_id` ровно
+        один раз. События о доставке приходят от службы доставки и не
+        ссылаются на ваши заказы: начисляйте бонусы по `user_id` из события,
+        не ища заказ.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./events.yaml#/components/schemas/DeliveryConfirmed"
+      responses:
+        "200":
+          description: Событие обработано (или уже было обработано раньше)
+        "204":
+          description: То же, без тела
+  /users/{id}/bonus:
+    get:
+      summary: Бонусный баланс покупателя (задание 2)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Баланс; у покупателя без начислений — `0`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bonus"
+              example: { points: 120 }
 components:
   schemas:
+    Bonus:
+      type: object
+      required: [points]
+      properties:
+        points:
+          type: integer
+          format: int64
+          minimum: 0
     OrderRequest:
       type: object
       required: [user_id, items]

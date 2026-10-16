@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitize(t *testing.T) {
@@ -60,5 +62,30 @@ func TestRunnerOutput(t *testing.T) {
 	body, note = runnerOutput(dir, "task_1")
 	if note != "" || body != "Задание 1\nS1 PASS" {
 		t.Fatalf("report: note=%q body=%q", note, body)
+	}
+}
+
+func TestWriteCheckRun(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(`{"tasks":["task_1","task_2"],"optional":["task_2"]}`), 0o644)
+	if !optional(cfg, "task_2") || optional(cfg, "task_1") || optional(filepath.Join(dir, "нет"), "task_2") {
+		t.Fatal("optional")
+	}
+	for status, want := range map[string]string{"pass": "success", "fail": "neutral", "unknown": "neutral"} {
+		p := filepath.Join(dir, status+".json")
+		writeCheckRun(p, "task_2", status, strings.Repeat("ж", maxCheckSummary))
+		var got struct {
+			Name, Status, Conclusion string
+			Output                   struct{ Title, Summary string }
+		}
+		b, _ := os.ReadFile(p)
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Conclusion != want || got.Status != "completed" || got.Name != "task_2 (необязательное)" ||
+			len(got.Output.Summary) > maxCheckSummary+16 || !utf8.ValidString(got.Output.Summary) {
+			t.Fatalf("%s: %+v (summary %d байт)", status, got, len(got.Output.Summary))
+		}
 	}
 }

@@ -1,5 +1,20 @@
+# Артефакты прогонов и локальные секреты стенда
 results/
 .env
 .mocks-token
+
+# Собранные бинарники
 /mocks/mocks
 /runner/runner
+/cmd/grade/grade
+/cmd/checkstatus/checkstatus
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Редакторы и ОС
+.DS_Store
+.idea/
+.vscode/

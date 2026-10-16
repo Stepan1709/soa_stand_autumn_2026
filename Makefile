@@ -27,7 +27,7 @@ TOKEN_FILE := .mocks-token
 ifeq ($(origin MOCKS_ADMIN_TOKEN),undefined)
 MOCKS_ADMIN_TOKEN := $(shell [ -s $(TOKEN_FILE) ] || (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >$(TOKEN_FILE)); cat $(TOKEN_FILE) 2>/dev/null)
 ifeq ($(strip $(MOCKS_ADMIN_TOKEN)),)
-$(error не удалось создать токен в $(TOKEN_FILE) (нужны od и /dev/urandom); удалите файл и повторите или задайте MOCKS_ADMIN_TOKEN=...)
+$(error не удалось создать токен в $(TOKEN_FILE) (нужны od и /dev/urandom); удалите файл и запустите снова или задайте MOCKS_ADMIN_TOKEN=...)
 endif
 endif
 export MOCKS_ADMIN_TOKEN
@@ -69,30 +69,40 @@ ifneq ($(strip $(PARAMS)),)
 RUNNER_MOUNT += -v $(abspath $(PARAMS)):/params.json:ro
 RUNNER_ARGS += -params /params.json
 endif
+# CHAOS — каталог, через который раннер просит перезапустить Orders (S7, S8
+# задания 2): runner/chaos.sh на хосте убивает контейнер orders и запускает
+# снова. Только вместе с RESULTS: каталог смонтирован в контейнер раннера.
+CHAOS_START :=
+CHAOS_STOP :=
 ifneq ($(strip $(RESULTS)),)
 RUNNER_MOUNT += -v $(abspath $(RESULTS)):/results
-RUNNER_ARGS += -results /results/task_$(TASK).json
+RUNNER_ARGS += -results /results/task_$(TASK).json -chaos /results/.chaos
+CHAOS_START = chaos='$(abspath $(RESULTS))/.chaos'; rm -rf "$$chaos"; mkdir -p "$$chaos"; chmod 777 "$$chaos"; \
+	sh runner/chaos.sh "$$chaos" $(COMPOSE) & chaos_pid=$$!;
+CHAOS_STOP = : >"$$chaos/stop"; wait $$chaos_pid 2>/dev/null; rm -rf "$$chaos";
 endif
 
 .PHONY: help up down logs ps scenarios dashboard-idle build grade sync ui token docs
 
 help:
 	@echo "make up                   поднять стенд вместе с вашим сервисом (база пересоздаётся)"
-	@echo "make scenarios TASK=1     прогнать сценарии задания 1"
+	@echo "make scenarios TASK=1     прогнать сценарии задания 1 (TASK=2 — необязательное задание 2: S1, S6–S8)"
 	@echo "make scenarios ONLY=S3    один сценарий (или несколько: ONLY=S2,S5)"
 	@echo "    WAIT=5                пауза после последнего заказа, с (по умолчанию 30) — для отладки"
 	@echo "    PARAMS=file.json      подменить параметры сценариев"
-	@echo "    RESULTS=dir           куда писать результаты (по умолчанию results/: .json, .txt, .html)"
+	@echo "    RESULTS=dir           куда писать результаты (по умолчанию results/: .json, .txt, .html; S7 и S8 без RESULTS не идут)"
+	@echo "    ORDERS_DIR=./examples/go  собрать Orders из другого каталога вместо orders/ (проверка всегда берёт orders/)"
 	@echo "make ui                   дашборд заглушек с кнопками: режимы, заказы, прогоны сценариев"
 	@echo "make token                токен к /admin/* заглушек одной строкой: T=\$$(make -s token)"
 	@echo "make docs                 контракты в Swagger UI: http://localhost:$(DOCS_PORT)"
 	@echo "make logs                 логи всех контейнеров"
 	@echo "make down                 остановить стенд"
 	@echo "make sync                 добавить remote upstream и сделать git fetch upstream"
-	@echo "make grade                официальная проверка локально (нужен Go 1.26)"
+	@echo "make grade                то же, что CI, локально: сверка файлов со своим деревом и оба задания (нужен Go 1.26)"
+	@echo "make ps / make build      состояние контейнеров / пересобрать образы"
 
 # postgres и orders пересоздаются: пустая база и свежий процесс на каждый прогон.
-up:
+up: dashboard-idle
 	$(COMPOSE) up -d --build --wait mocks
 	$(COMPOSE) up -d --build --force-recreate --wait postgres
 	$(COMPOSE) up -d --build --force-recreate --no-deps orders
@@ -102,12 +112,15 @@ build:
 	$(COMPOSE) --profile runner build
 
 # Прогон из дашборда (make ui) и make scenarios ходят в одни заглушки; кроме
-# того, make up пересоздал бы Orders посреди чужого прогона. Проверка — до up.
+# того, make up пересоздал бы Orders посреди чужого прогона. Проверка — до up:
+# статус прогона из дашборда и признак прогона у заглушек (GET /admin/run —
+# любой прогон, в том числе другой make scenarios).
+ADMIN_CURL = curl -sf -m 3 $(if $(MOCKS_ADMIN_TOKEN),-H 'X-Admin-Token: $(MOCKS_ADMIN_TOKEN)')
 dashboard-idle:
-	@if command -v curl >/dev/null 2>&1 && curl -sf -m 3 $(if $(MOCKS_ADMIN_TOKEN),-H 'X-Admin-Token: $(MOCKS_ADMIN_TOKEN)') \
-	  'http://localhost:$(MOCKS_PORT)/admin/runner/status' 2>/dev/null | grep -q '"state":"running"'; then \
-	  echo "Сейчас идёт прогон сценариев из дашборда (make ui): оба прогона ходят в одни и те же заглушки."; \
-	  echo "Дождитесь его конца на дашборде и запустите make scenarios снова."; exit 2; fi
+	@if command -v curl >/dev/null 2>&1 && { $(ADMIN_CURL) 'http://localhost:$(MOCKS_PORT)/admin/runner/status' 2>/dev/null | grep -q '"state":"running"' || \
+	  $(ADMIN_CURL) 'http://localhost:$(MOCKS_PORT)/admin/run' 2>/dev/null | grep -q '"runner_active":true'; }; then \
+	  echo "Сейчас идёт прогон сценариев (из дашборда или другой make scenarios): прогоны ходят в одни и те же заглушки."; \
+	  echo "Дождитесь его конца и запустите команду снова."; exit 2; fi
 
 scenarios: dashboard-idle up
 	$(COMPOSE) --profile runner build runner
@@ -118,7 +131,7 @@ ifneq ($(strip $(RESULTS)),)
 	rm -f '$(abspath $(RESULTS))/task_$(TASK).json' '$(abspath $(RESULTS))/task_$(TASK).txt' '$(abspath $(RESULTS))/task_$(TASK).html'
 endif
 	@echo '$(COMPOSE) run --rm --no-deps $(RUNNER_MOUNT) runner $(RUNNER_ARGS)'
-	@status=0; $(COMPOSE) run --rm --no-deps $(RUNNER_MOUNT) runner $(RUNNER_ARGS) || status=$$?; \
+	@status=0; $(CHAOS_START) $(COMPOSE) run --rm --no-deps $(RUNNER_MOUNT) runner $(RUNNER_ARGS) || status=$$?; $(CHAOS_STOP) \
 	$(if $(strip $(RESULTS)),if [ -f '$(RESULTS)/task_$(TASK).html' ]; then echo ""; echo 'Отчёт: $(RESULTS)/task_$(TASK).html'; fi;) \
 	$(stand_info); exit $$status
 
@@ -141,7 +154,7 @@ ui:
 	$(COMPOSE) --profile ui up -d --build runner-ui
 	@echo ""
 	@echo "Дашборд: $(UI_URL)"
-	@echo "(стенд должен быть поднят: make up; не запускайте make scenarios во время прогона из дашборда)"
+	@echo "(стенд должен быть поднят: make up; пока идёт прогон из дашборда, make scenarios не запустится)"
 	@$(call open_url,$(UI_URL))
 
 token:

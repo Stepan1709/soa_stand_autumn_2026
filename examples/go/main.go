@@ -2,6 +2,10 @@
 //
 // Оформление заказа: зарезервировать товар в Inventory, списать деньги в
 // Payment, записать заказ в базу. Пока Payment и Inventory работают без отказов, всё работает.
+//
+// Задание 2 (необязательное): об оплаченном заказе сервис сообщает в шину
+// событий (order.paid), а за подтверждённую доставку начисляет покупателю
+// бонусы. Пока шина работает и Orders не падает, тоже всё работает.
 package main
 
 import (
@@ -18,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,6 +34,10 @@ CREATE TABLE IF NOT EXISTS orders (
     amount_cents BIGINT NOT NULL,
     items        JSONB NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS bonuses (
+    user_id TEXT PRIMARY KEY,
+    points  BIGINT NOT NULL
 )`
 
 type Item struct {
@@ -46,12 +55,14 @@ type app struct {
 	db           *pgxpool.Pool
 	paymentURL   string
 	inventoryURL string
+	eventsURL    string // шина событий; пусто — события не публикуются
 }
 
 func main() {
 	a := &app{
 		paymentURL:   strings.TrimRight(mustEnv("PAYMENT_URL"), "/"),
 		inventoryURL: strings.TrimRight(mustEnv("INVENTORY_URL"), "/"),
+		eventsURL:    strings.TrimRight(os.Getenv("EVENTS_URL"), "/"),
 	}
 	db, err := connect(mustEnv("DATABASE_URL"))
 	if err != nil {
@@ -66,6 +77,8 @@ func main() {
 	})
 	mux.HandleFunc("POST /orders", a.createOrder)
 	mux.HandleFunc("GET /orders/{id}", a.getOrder)
+	mux.HandleFunc("POST /webhooks/delivery", a.deliveryConfirmed)
+	mux.HandleFunc("GET /users/{id}/bonus", a.getBonus)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -132,7 +145,59 @@ func (a *app) createOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("order", "id", id, "status", status)
+	if status == "paid" {
+		a.publishPaid(id)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "status": status})
+}
+
+// publishPaid сообщает в шину, что заказ оплачен.
+func (a *app) publishPaid(orderID string) {
+	if a.eventsURL == "" {
+		return
+	}
+	code, err := call(http.MethodPost, a.eventsURL+"/events", map[string]any{
+		"id":          newID(),
+		"type":        "order.paid",
+		"order_id":    orderID,
+		"occurred_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil || code != http.StatusAccepted {
+		slog.Warn("событие не опубликовано", "order", orderID, "code", code, "err", err)
+	}
+}
+
+// deliveryConfirmed — POST /webhooks/delivery: начислить бонусы за доставку.
+func (a *app) deliveryConfirmed(w http.ResponseWriter, r *http.Request) {
+	var ev struct {
+		ID          string `json:"id"`
+		UserID      string `json:"user_id"`
+		BonusPoints int64  `json:"bonus_points"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil || ev.UserID == "" || ev.BonusPoints <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad_request"})
+		return
+	}
+	_, err := a.db.Exec(r.Context(),
+		`INSERT INTO bonuses (user_id, points) VALUES ($1, $2)
+		 ON CONFLICT (user_id) DO UPDATE SET points = bonuses.points + EXCLUDED.points`,
+		ev.UserID, ev.BonusPoints)
+	if err != nil {
+		slog.Error("бонусы", "event", ev.ID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) getBonus(w http.ResponseWriter, r *http.Request) {
+	var points int64
+	err := a.db.QueryRow(r.Context(), `SELECT points FROM bonuses WHERE user_id = $1`, r.PathValue("id")).Scan(&points)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"points": points})
 }
 
 func (a *app) fail(w http.ResponseWriter, id string, err error) {

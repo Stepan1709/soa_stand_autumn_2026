@@ -34,11 +34,23 @@ const (
 	maxIDLen       = 256              // id длиннее не запоминаются
 )
 
-// sending — текущая или последняя отправка заказов.
+// checkWait — общий предел одной проверки статусов (POST /admin/orders/check).
+var checkWait = 45 * time.Second
+
+// Почему отправка заказов прервана (sendingView.Stopped).
+const (
+	stopReset  = "reset"  // журнал очищен
+	stopRunner = "runner" // начался прогон сценариев
+)
+
+// sending — текущая или последняя отправка заказов. cancel прерывает её:
+// reset и начало прогона раннера.
 type sending struct {
 	total, sent, done int
 	rate              float64
 	active            bool
+	stopped           string // "" | stopReset | stopRunner
+	cancel            context.CancelFunc
 }
 
 type sendingView struct {
@@ -47,13 +59,26 @@ type sendingView struct {
 	Done     int     `json:"done"`
 	RatePerS float64 `json:"rate_per_s"`
 	Active   bool    `json:"active"`
+	// Stopped — отправка прервана: reset (журнал очищен) | runner (начался
+	// прогон сценариев).
+	Stopped string `json:"stopped,omitempty"`
 }
 
 func (s *state) sendingLocked() *sendingView {
 	if s.send == nil {
 		return nil
 	}
-	return &sendingView{Total: s.send.total, Sent: s.send.sent, Done: s.send.done, RatePerS: s.send.rate, Active: s.send.active}
+	return &sendingView{Total: s.send.total, Sent: s.send.sent, Done: s.send.done, RatePerS: s.send.rate,
+		Active: s.send.active, Stopped: s.send.stopped}
+}
+
+// stopSendingLocked прерывает текущую отправку заказов.
+func (s *state) stopSendingLocked(reason string) {
+	if s.send != nil && s.send.active {
+		s.send.cancel()
+		s.send.active = false
+		s.send.stopped = reason
+	}
 }
 
 // ordersTarget — адрес Orders из окружения: http(s)://хост[:порт] без
@@ -70,11 +95,16 @@ func ordersTarget(raw string) (string, error) {
 	return raw, nil
 }
 
-var ordersClient = &http.Client{Transport: &http.Transport{
-	MaxIdleConns:        100,
-	MaxIdleConnsPerHost: 100,
-	IdleConnTimeout:     30 * time.Second,
-}}
+// ordersClient не ходит по редиректам: ответ Orders с Location не уводит
+// заглушки на другой адрес (например, в admin-сеть).
+var ordersClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     30 * time.Second,
+	},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 type sendRequest struct {
 	Count    int     `json:"count"`
@@ -112,26 +142,37 @@ func (s *state) handleSendOrders(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "busy", "предыдущая отправка заказов ещё идёт")
 		return
 	}
-	s.send = &sending{total: req.Count, rate: req.RatePerS, active: true}
-	cur := s.send
+	ctx, cancel := context.WithCancel(context.Background())
+	s.send = &sending{total: req.Count, rate: req.RatePerS, active: true, cancel: cancel}
+	cur, run := s.send, s.run
 	view := s.sendingLocked()
 	s.mu.Unlock()
-	go s.sendOrders(cur, req.Count, req.RatePerS)
+	go s.sendOrders(ctx, cur, run, req.Count, req.RatePerS)
 	writeJSON(w, http.StatusAccepted, view)
 }
 
-func (s *state) sendOrders(cur *sending, n int, rate float64) {
+// sendOrders шлёт заказы, пока ctx не отменён (reset, начало прогона).
+// run — журнал, в который пишутся ответы: после reset они не попадают в новый.
+func (s *state) sendOrders(ctx context.Context, cur *sending, run, n int, rate float64) {
 	var wg sync.WaitGroup
 	start := time.Now()
+	defer cur.cancel()
+loop:
 	for i := 0; i < n; i++ {
-		time.Sleep(time.Until(start.Add(time.Duration(float64(i) / rate * float64(time.Second)))))
+		t := time.NewTimer(time.Until(start.Add(time.Duration(float64(i) / rate * float64(time.Second)))))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			break loop
+		case <-t.C:
+		}
 		s.mu.Lock()
 		cur.sent++
 		s.mu.Unlock()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.postOrder()
+			s.postOrder(ctx, run)
 			s.mu.Lock()
 			cur.done++
 			s.mu.Unlock()
@@ -178,10 +219,11 @@ func genOrder() orderBody {
 
 // postOrder отправляет один заказ и пишет исход в ленту (service = orders):
 // outcome — код ответа, «no_response» (ответа не было за orderWait) или
-// «no_connection».
-func (s *state) postOrder() {
+// «no_connection». Если отправку прервали или журнал сменился (run), исход
+// никуда не пишется.
+func (s *state) postOrder(parent context.Context, run int) {
 	body, _ := json.Marshal(genOrder())
-	ctx, cancel := context.WithTimeout(context.Background(), orderWait)
+	ctx, cancel := context.WithTimeout(parent, orderWait)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.ordersURL+"/orders", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -211,24 +253,39 @@ func (s *state) postOrder() {
 	}
 	ev.LatencyMS = time.Since(start).Milliseconds()
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if parent.Err() != nil || s.run != run {
+		return
+	}
 	s.addEventLocked(ev)
 	// Опрашиваются только id без правки: иначе GET ушёл бы не о том заказе.
 	if id := ev.OrderID; id != "" && id == rawID && len(id) <= maxIDLen && !s.knownSet[id] && len(s.known) < maxKnownIDs {
 		s.knownSet[id] = true
 		s.known = append(s.known, id)
 	}
-	s.mu.Unlock()
 }
 
 // handleCheckOrders — POST /admin/orders/check: GET /orders/{id} по
 // последним maxCheckIDs id заказов, отправленных с дашборда в этом журнале.
-// Ответ: {"statuses": {order_id (как в ленте): итог}}.
-func (s *state) handleCheckOrders(w http.ResponseWriter, _ *http.Request) {
+// Ответ: {"statuses": {order_id (как в ленте): итог}}. Одна проверка за раз,
+// не дольше checkWait: что не успели опросить — в ответ не попадает.
+func (s *state) handleCheckOrders(w http.ResponseWriter, r *http.Request) {
 	if s.ordersURL == "" {
 		writeErr(w, http.StatusServiceUnavailable, "no_orders", "адрес Orders заглушкам не задан (ORDERS_URL)")
 		return
 	}
 	s.mu.Lock()
+	if s.checking {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "busy", "проверка статусов уже идёт")
+		return
+	}
+	s.checking = true
+	defer func() {
+		s.mu.Lock()
+		s.checking = false
+		s.mu.Unlock()
+	}()
 	ids := s.known
 	if len(ids) > maxCheckIDs {
 		ids = ids[len(ids)-maxCheckIDs:]
@@ -236,17 +293,27 @@ func (s *state) handleCheckOrders(w http.ResponseWriter, _ *http.Request) {
 	ids = append([]string(nil), ids...)
 	s.mu.Unlock()
 
+	ctx, cancel := context.WithTimeout(r.Context(), checkWait)
+	defer cancel()
 	out := make(map[string]string, len(ids))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
+ids:
 	for _, id := range ids {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break ids
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			st := s.getOrderStatus(id)
+			st := s.getOrderStatus(ctx, id)
+			if ctx.Err() != nil {
+				return
+			}
 			mu.Lock()
 			out[cutID(id)] = st
 			mu.Unlock()
@@ -256,8 +323,8 @@ func (s *state) handleCheckOrders(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"statuses": out})
 }
 
-func (s *state) getOrderStatus(id string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), statusWait)
+func (s *state) getOrderStatus(parent context.Context, id string) string {
+	ctx, cancel := context.WithTimeout(parent, statusWait)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.ordersURL+"/orders/"+url.PathEscape(id), nil)
 	resp, err := ordersClient.Do(req)

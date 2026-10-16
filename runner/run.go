@@ -99,11 +99,13 @@ func writeResults(path string, v any, o *output, rep *report) {
 func (r *runner) run(task string, ids []string, resultsPath string) int {
 	started := time.Now()
 	out := r.out
-	out.printf("Задание %s, сценарии %s; пауза после заказов %.0f с, бюджет ответа %d мс\n\n",
+	out.printf("Задание %s, сценарии %s; пауза после заказов %.0f с, ответ не дольше %d мс\n\n",
 		task, strings.Join(ids, " "), r.params.WaitS, r.params.BudgetMS)
 
 	standErr := func(msg string) int {
 		out.printf("СТЕНД: %s\n", msg)
+		// Прогон начат, но не состоялся: снять блокировку заглушек сразу.
+		r.endRun("прогон прерван: стенд не готов")
 		r.finish(resultsPath, map[string]any{
 			"task": task, "run_at": started.UTC(), "seconds": time.Since(started).Seconds(),
 			"error": clean(strings.SplitN(msg, "\n", 2)[0]), "passed": 0, "total": len(ids),
@@ -115,7 +117,19 @@ func (r *runner) run(task string, ids []string, resultsPath string) int {
 	if err := r.waitHealthy("заглушки (mocks)", r.mocks, 60*time.Second); err != nil {
 		return standErr(err.Error())
 	}
-	if err := r.waitHealthy("Orders", r.orders, 120*time.Second); err != nil {
+	// Метка начала прогона — сразу после проверки заглушек, до ожидания Orders:
+	// с этого момента ручные кнопки дашборда и второй прогон не мешают.
+	if err := r.startRun(); err != nil {
+		return standErr(err.Error())
+	}
+	// Признак жизни для заглушек — до метки конца прогона.
+	stopAlive := r.keepAlive()
+	defer stopAlive()
+	ordersWait := 120 * time.Second
+	if r.ordersWait > 0 {
+		ordersWait = r.ordersWait
+	}
+	if err := r.waitHealthy("Orders", r.orders, ordersWait); err != nil {
 		return standErr(err.Error() + "\nСмотрите make logs: сервис orders должен слушать PORT и отвечать 200 на GET /healthz.")
 	}
 
@@ -131,11 +145,7 @@ func (r *runner) run(task string, ids []string, resultsPath string) int {
 	r.report("", results)
 	// Отказы выключаются, но журнал последнего сценария остаётся в заглушках:
 	// его можно разобрать на дашборде (make ui) после прогона.
-	if n := len(ids); n > 0 {
-		last := scenarioByID(ids[n-1])
-		_ = r.admin("PUT", "/admin/modes", map[string]any{"seed": r.params.Seed, "payment": map[string]any{},
-			"label": last.ID + " · " + last.Title + " · прогон завершён", "finished": true})
-	}
+	r.endRun("прогон завершён")
 
 	pass := 0
 	for _, res := range results {
@@ -194,7 +204,9 @@ func (r *runner) one(def *scenarioDef) scenarioResult {
 
 // evaluate — проверки, журнал и сводка по состоянию после прогона.
 func evaluate(res *scenarioResult, def *scenarioDef, p *ScenarioParams, rs *runState) {
-	res.Checks = commonChecks(rs.params, rs)
+	if !def.noOrders {
+		res.Checks = commonChecks(rs.params, rs)
+	}
 	if def.extra != nil {
 		res.Checks = append(def.extra(p, rs), res.Checks...)
 	}
@@ -210,8 +222,15 @@ func evaluate(res *scenarioResult, def *scenarioDef, p *ScenarioParams, rs *runS
 			}
 		}
 	}
-	res.Journal = journal(rs, def)
-	res.Facts = keyFacts(rs)
+	story := orderStory
+	if def.noOrders {
+		res.Journal = journalS8(rs)
+		res.Facts = keyFactsS8(rs)
+		story = userStory
+	} else {
+		res.Journal = journal(rs, def)
+		res.Facts = keyFacts(rs)
+	}
 	// Истории проблемных заказов — в журнал: каждый заказ один раз, не
 	// больше пяти на проверку.
 	shown := map[string]bool{}
@@ -230,7 +249,7 @@ func evaluate(res *scenarioResult, def *scenarioDef, p *ScenarioParams, rs *runS
 			}
 			shown[id] = true
 			n++
-			res.Journal = append(res.Journal, fmt.Sprintf("  [%s] %s: %s", c.Name, rs.display(id), orderStory(rs, id)))
+			res.Journal = append(res.Journal, fmt.Sprintf("  [%s] %s: %s", c.Name, rs.display(id), story(rs, id)))
 		}
 	}
 	res.view = buildView(res, rs)
@@ -276,7 +295,13 @@ func verdict(ok bool) string {
 // level — уровень по таблице «Уровни» задания; только при полном прогоне.
 // Возвращает уровень одним словом (для JSON) и строку для вывода.
 func level(task string, ids []string, results []scenarioResult) (string, string) {
-	if task != "1" || len(results) != len(tasks["1"]) || len(ids) != len(tasks["1"]) {
+	if len(results) != len(tasks[task]) || len(ids) != len(tasks[task]) {
+		return "", ""
+	}
+	if task == "2" {
+		return level2(results)
+	}
+	if task != "1" {
 		return "", ""
 	}
 	all, s1, core := true, false, true
@@ -293,9 +318,9 @@ func level(task string, ids []string, results []scenarioResult) (string, string)
 	case all:
 		return "полностью", "Уровень: полностью"
 	case s1 && core:
-		return "засчитано", "Уровень: засчитано (S1 PASS, нет двойных списаний, все ответы в бюджете)"
+		return "засчитано", "Уровень: засчитано (S1 PASS, нет двойных списаний, все ответы уложились в предел времени)"
 	}
-	return "не засчитано", "Уровень: не засчитано (нужно: S1 PASS, во всех сценариях нет двойных списаний и все ответы в бюджете)"
+	return "не засчитано", "Уровень: не засчитано (нужно: S1 PASS, во всех сценариях нет двойных списаний и все ответы уложились в предел времени)"
 }
 
 // short — id для вывода: без управляющих символов, длинный сокращается до
@@ -314,4 +339,19 @@ func cut(s string, n int) string {
 		return string(r[:n-4]) + "…"
 	}
 	return s
+}
+
+// level2 — уровни задания 2: «засчитано» — S1, S6 и S7; «полностью» — и S8.
+func level2(results []scenarioResult) (string, string) {
+	pass := map[string]bool{}
+	for _, res := range results {
+		pass[res.ID] = res.Pass && res.Error == ""
+	}
+	switch {
+	case pass["S1"] && pass["S6"] && pass["S7"] && pass["S8"]:
+		return "полностью", "Уровень: полностью"
+	case pass["S1"] && pass["S6"] && pass["S7"]:
+		return "засчитано", "Уровень: засчитано (S1, S6 и S7 PASS)"
+	}
+	return "не засчитано", "Уровень: не засчитано (задание необязательное; нужно: S1, S6 и S7 PASS)"
 }

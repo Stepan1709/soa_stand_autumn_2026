@@ -26,7 +26,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-.wrap { width: 100%; max-width: 1400px; margin: 0 auto; padding: 16px; }
+.wrap { width: 100%; max-width: 1600px; margin: 0 auto; padding: 16px; }
 header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 12px; }
 h1 { font-size: 18px; margin: 0; font-weight: 600; }
 h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
@@ -42,16 +42,19 @@ h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
 .chip.warn { background: var(--warn-bg); color: var(--warn); }
 .chip.bad { background: var(--bad-bg); color: var(--bad); }
 .chip.hang { background: var(--hang-bg); color: var(--hang); }
-.banner { padding: 12px 14px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); margin-bottom: 14px; display: none; }
+/* Место под баннеры занято всегда: появление баннера не сдвигает панели. */
+.banners { min-height: 38px; margin-bottom: 10px; }
+.banner { padding: 8px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); display: none; }
+.banner.bus { background: var(--hang-bg); color: var(--hang); }
 .banner code, .note code, .msg code { font-family: var(--mono); }
-.tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
 .tile .n { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .tile .t { font-size: 12.5px; color: var(--muted); }
 .tile .s { font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 .tile.alarm { border-color: var(--bad); background: var(--bad-bg); }
 .tile.alarm .n, .tile.alarm .t { color: var(--bad); }
-.grid { display: grid; grid-template-columns: minmax(0, 11fr) minmax(0, 9fr); gap: 14px; align-items: start; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
 .panel-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
 .panel-head h2 { margin: 0; }
@@ -84,6 +87,11 @@ tr.tl td { background: var(--bg); padding: 8px 10px 10px 24px; }
 .ctl { margin-bottom: 14px; }
 .ctl > summary { cursor: pointer; font-weight: 600; font-size: 15px; margin-bottom: 8px; user-select: none; }
 .ctl-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 5fr); gap: 14px; align-items: start; }
+.ctl-col { display: grid; gap: 14px; min-width: 0; align-content: start; }
+.bal-wrap { max-width: 100%; overflow-x: auto; margin-top: 8px; }
+table.bal td { white-space: normal; overflow-wrap: anywhere; }
+table.bal tr.mismatch td { background: var(--bad-bg); color: var(--bad); }
+table.bal tr.match td.num:nth-child(2) { color: var(--ok); }
 .form { display: grid; gap: 6px; font-size: 13px; }
 .form label, .inline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 input[type=number], select { font: inherit; font-size: 13px; color: var(--text); background: var(--input-bg);
@@ -94,6 +102,7 @@ button { font: inherit; font-size: 13px; color: var(--text); background: var(--i
 button:hover:not(:disabled) { border-color: var(--accent); }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 button:disabled, input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
+[hidden] { display: none !important; }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
 .msg { font-size: 12.5px; margin-top: 6px; min-height: 1em; overflow-wrap: anywhere; }
 .msg.bad { color: var(--bad); }
@@ -106,9 +115,8 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
 .warn-note { color: var(--warn); }
 
 @media (max-width: 1200px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
   .ctl-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (max-width: 800px) {
   .ctl-grid { grid-template-columns: minmax(0, 1fr); }
@@ -125,13 +133,16 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
 <body>
 <div class="wrap">
   <header>
-    <h1>Стенд: Payment и Inventory</h1>
+    <h1>Стенд: Payment, Inventory и шина</h1>
     <span id="label" class="label empty">ручной режим</span>
     <span id="elapsed" class="muted"></span>
     <span class="conn"><span id="dot" class="dot"></span><span id="conn">загрузка…</span></span>
   </header>
 
-  <div id="banner" class="banner"></div>
+  <div class="banners">
+    <div id="banner" class="banner"></div>
+    <div id="bus-banner" class="banner bus"></div>
+  </div>
 
   <div class="modes" id="modes"></div>
 
@@ -139,9 +150,10 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     <summary>Управление стендом</summary>
     <div id="lock-hint" class="lock-hint" hidden></div>
     <div class="ctl-grid">
+      <div class="ctl-col">
       <section class="panel">
         <h2>Режимы Payment</h2>
-        <div class="form">
+        <div class="form" id="pay-form">
           <label>Отвечает 500 на <input id="f-fail" type="number" min="0" max="100" step="1" class="manual"> % запросов</label>
           <label>Банк отклоняет (402) <input id="f-decline" type="number" min="0" max="100" step="1" class="manual"> % заказов</label>
           <label>Отвечает через <input id="f-latency" type="number" min="0" max="3600000" step="100" class="manual"> мс</label>
@@ -157,13 +169,32 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
         </div>
         <div class="btns">
           <button id="b-apply" class="manual primary" type="button">Применить</button>
-          <button id="b-off" class="manual" type="button">Убрать все отказы</button>
+          <button id="b-off" class="manual" type="button" title="Payment и шина работают штатно">Убрать все отказы</button>
           <button id="b-reset" class="manual" type="button" title="POST /admin/reset: журнал фактов и лента начинаются заново, отказы убираются">Очистить журнал</button>
         </div>
         <div class="btns" id="presets"><span class="muted">Как в сценарии:</span></div>
         <div class="msg" id="modes-msg"></div>
       </section>
 
+      <section class="panel">
+        <h2>Шина событий</h2>
+        <div class="form" id="bus-form">
+          <label>Недоступна <input id="f-bus-down" type="number" min="0" max="3600" step="1" class="manual"> с, начиная через
+            <input id="f-bus-after" type="number" min="0" max="3600" step="1" class="manual"> с</label>
+          <label>Доля висящих запросов <input id="f-bus-hang" type="number" min="0" max="100" step="1" class="manual"> %</label>
+        </div>
+        <div class="btns">
+          <button id="b-bus-apply" class="manual primary" type="button">Применить</button>
+          <button id="b-bus-off" class="manual" type="button">Убрать отказ</button>
+          <button id="b-bus-s6" class="manual" type="button">как в S6</button>
+        </div>
+        <div class="msg" id="bus-msg"></div>
+        <div class="note">Пока шина недоступна, публикации <code>POST /events</code> получают 503; указанная доля
+          запросов висит без ответа до конца отказа. Режимы Payment при этом не меняются.</div>
+      </section>
+      </div>
+
+      <div class="ctl-col">
       <section class="panel">
         <h2>Заказы в Orders</h2>
         <div class="btns"><button id="b-one" class="manual" type="button">Отправить 1 заказ</button></div>
@@ -179,10 +210,49 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       </section>
 
       <section class="panel">
+        <h2>Доставка (задание 2)</h2>
+        <div class="form" id="dlv-form">
+          <span class="inline">Событий <input id="f-dlv-n" type="number" min="1" max="10000" step="1" value="50" class="manual">
+            покупателей <input id="f-dlv-users" type="number" min="1" max="10000" step="1" value="10" class="manual"></span>
+          <span class="inline">Копий одного события: до <input id="f-dlv-copies" type="number" min="1" max="10" step="1" value="3" class="manual"></span>
+          <span class="inline">Одновременно приходят <input id="f-dlv-par" type="number" min="0" max="100" step="1" value="30" class="manual"> % копий</span>
+          <span class="inline">Темп <input id="f-dlv-rate" type="number" min="0.1" max="1000" step="1" value="10" class="manual"> событий в секунду</span>
+        </div>
+        <div class="btns">
+          <button id="b-dlv" class="manual primary" type="button">Доставить события</button>
+          <button id="b-redlv" class="manual" type="button">Прислать копии ещё раз</button>
+          <button id="b-bal" class="manual" type="button">Проверить балансы</button>
+        </div>
+        <div class="run-state" id="dlv-state"></div>
+        <div class="msg" id="dlv-msg"></div>
+        <div class="note warn-note" id="bal-pending" hidden>Доставка ещё идёт — числа могут вырасти.</div>
+        <div class="bal-wrap"><table class="bal" id="bal-table" hidden>
+          <thead><tr><th>Покупатель</th><th class="num">Получено</th><th class="num">Ожидалось</th><th></th></tr></thead>
+          <tbody id="bal"></tbody>
+        </table></div>
+        <div class="note">Шина присылает в <code>POST /webhooks/delivery</code> события <code>delivery.confirmed</code>:
+          каждое от одной до нескольких копий, часть копий — одновременно; копия приходит раз в секунду, пока Orders
+          не ответит 2xx. «Проверить балансы» — <code>GET /users/{id}/bonus</code> по покупателям партии и по
+          <code>u-0</code>, которому событий не было. «Ожидалось» — сумма по всем партиям с момента <code>make up</code>.</div>
+      </section>
+      </div>
+
+      <section class="panel">
         <h2>Проверка сценариями</h2>
+        <div class="btns">
+          <label class="inline">Задание
+            <select id="f-task" class="run">
+              <option value="1">1 — Деньги не списываются дважды</option>
+              <option value="2">2 — Заказ не теряется (необязательное)</option>
+            </select></label>
+        </div>
         <div class="btns" id="run-btns">
           <button id="b-run-all" class="run primary" type="button">Прогнать все (S1–S5)</button>
         </div>
+        <div class="btns" id="run-btns-2" hidden>
+          <button id="b-run-t2" class="run primary" type="button">Прогнать S1 и S6</button>
+        </div>
+        <div class="note" id="task2-note" hidden>S7 и S8 — только <code>make scenarios TASK=2</code> (они перезапускают Orders).</div>
         <div class="btns">
           <label class="inline">Пауза после заказов
             <select id="f-wait" class="run">
@@ -194,8 +264,8 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
         <div class="flags" id="run-chips" style="margin-top:6px"></div>
         <div class="btns"><button id="b-report" type="button" hidden>Отчёт HTML</button><span class="msg" id="run-msg"></span></div>
         <details id="run-out-wrap" hidden><summary class="muted">Вывод раннера</summary><pre class="out" id="run-out"></pre></details>
-        <div class="note warn-note">Не запускайте <code>make scenarios</code>, пока идёт прогон отсюда: обе проверки ходят
-          в одни и те же заглушки и испортят друг другу результат. Итог прогона пишется и в <code>results/</code>.</div>
+        <div class="note warn-note">Пока идёт прогон отсюда, <code>make scenarios</code> не запустится: прогоны ходят
+          в одни и те же заглушки. Итог прогона пишется и в <code>results/ui_task_N.*</code>.</div>
       </section>
     </div>
   </details>
@@ -207,6 +277,8 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     <div class="tile" id="t-dbl-tile"><div class="t">Заказов с 2+ списаниями</div><div class="n" id="t-dbl">0</div></div>
     <div class="tile"><div class="t">Отказов банка (402)</div><div class="n" id="t-dec">0</div></div>
     <div class="tile"><div class="t">Резервов</div><div class="n" id="t-res">0</div><div class="s" id="t-res-s"></div></div>
+    <div class="tile"><div class="t">Публикаций в шину</div><div class="n" id="t-bus">0</div><div class="s" id="t-bus-s"></div></div>
+    <div class="tile"><div class="t">Заказов с событием</div><div class="n" id="t-bus-o">0</div><div class="s" id="t-bus-o-s"></div></div>
   </div>
 
   <div class="grid">
@@ -220,7 +292,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
         <table>
           <thead><tr>
             <th>order_id</th><th class="num">Запросов к Payment</th><th class="num">Списаний</th>
-            <th class="num">Сумма</th><th>Резерв</th><th>Ответ Orders</th><th>Итог (GET)</th><th>Проблемы</th>
+            <th class="num">Сумма</th><th>Резерв</th><th>Ответ Orders</th><th>Итог (GET)</th><th>Событие</th><th>Проблемы</th>
           </tr></thead>
           <tbody id="orders"></tbody>
         </table>
@@ -252,9 +324,14 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     S2: { title: 'Payment отвечает 500 на часть запросов', orders: 50, rate_per_s: 10, payment: { fail_rate: 0.33 } },
     S3: { title: 'Payment выполняет операцию, но отвечает медленно', orders: 20, rate_per_s: 5, payment: { latency_ms: 2000 } },
     S4: { title: 'Payment не отвечает, потом поднимается', orders: 50, rate_per_s: 2, payment: { blackhole_s: 60 } },
-    S5: { title: 'Payment выполняет операцию и теряет ответ', orders: 20, rate_per_s: 5, payment: { lost_response: 'first_per_order' } }
+    S5: { title: 'Payment выполняет операцию и теряет ответ', orders: 20, rate_per_s: 5, payment: { lost_response: 'first_per_order' } },
+    S6: { title: 'Шина событий недоступна, потом поднимается', orders: 100, rate_per_s: 10, payment: { decline_rate: 0.1 },
+      bus: { down_s: 60, down_after_s: 2, hang_rate: 0.5 } }
   };
   var IDS = ['S1', 'S2', 'S3', 'S4', 'S5'];
+  // Что из задания можно прогнать отсюда. S7 и S8 перезапускают Orders —
+  // только make scenarios TASK=2.
+  var TASK_IDS = { '1': IDS, '2': ['S1', 'S6'] };
 
   var token = (function () {
     var m = /(?:^#|&)token=([^&]*)/.exec(location.hash);
@@ -306,7 +383,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   }
   function money(c) { return (c / 100).toFixed(2); }
   function svcName(s) {
-    return s === 'payment' ? 'Payment' : s === 'inventory' ? 'Inventory' : s === 'orders' ? 'Orders' : String(s || '');
+    return s === 'payment' ? 'Payment' : s === 'inventory' ? 'Inventory' : s === 'orders' ? 'Orders' : s === 'bus' ? 'Шина' : String(s || '');
   }
   function reqText(ev) { return (ev.method || '') + ' ' + (ev.path || ''); }
   function isManualLabel(text) { return !text || /^ручной режим/.test(text); }
@@ -333,7 +410,18 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     if (o === 'blackhole') return ['без ответа; ' + (gone ? 'Orders закрыл соединение через ' : 'соединение закрыто через ') + dur, 'bad'];
     var txt = o, tone = '';
     if (o === 'lost') { txt = 'ответ потерян после списания'; tone = 'bad'; }
-    else if (ev.service === 'payment') {
+    else if (ev.service === 'bus' && ev.path === '/webhooks/delivery') {
+      // Шина → Orders: доставка delivery.confirmed.
+      if (/^2/.test(o)) { txt = o + ' · Orders подтвердил'; tone = 'ok'; }
+      else if (o === 'no_response') { txt = 'Orders не ответил'; tone = 'bad'; }
+      else if (o === 'no_connection') { txt = 'нет соединения с Orders'; tone = 'bad'; }
+      else { tone = 'bad'; }
+    } else if (ev.service === 'bus') {
+      if (o === '202') { txt = '202 · событие принято'; tone = 'ok'; }
+      else if (o === '503') { txt = '503 · шина недоступна'; tone = 'bad'; }
+      else if (o === 'hang') return ['без ответа; ' + (gone ? 'Orders закрыл соединение через ' : 'соединение закрыто через ') + dur, 'bad'];
+      else { tone = 'warn'; }
+    } else if (ev.service === 'payment') {
       if (o === '201') { txt = '201 · списано'; tone = 'ok'; }
       else if (o === '200') { tone = 'ok'; }
       else if (o === '402') { txt = '402 · отказ банка'; tone = 'warn'; }
@@ -386,7 +474,8 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   // Сводка по заказу. Списание засчитывается, когда у запроса есть исход:
   // сразу или после задержки ответа.
   function aggregate(o) {
-    var a = { pay: 0, charges: 0, amount: 0, declines: 0, lastDecline: 0, resv: 'none', last: o.first, post: null };
+    var a = { pay: 0, charges: 0, amount: 0, declines: 0, lastDecline: 0, resv: 'none', last: o.first, post: null,
+      busTries: 0, busAcc: 0, evIds: new Set() };
     o.evs.forEach(function (ev) {
       var end = ev.doneAt != null ? ev.doneAt : ev.t;
       if (end > a.last) a.last = end;
@@ -401,12 +490,26 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
         if (ev.method === 'DELETE' && a.resv === 'held') a.resv = 'released';
       } else if (ev.service === 'orders') {
         a.post = ev;
+      } else if (ev.service === 'bus' && ev.path === '/events') {
+        a.busTries++;
+        if (ev.outcome === '202') a.busAcc++;
+        var eid = busEventId(ev);
+        if (eid) a.evIds.add(eid);
       }
     });
     return a;
   }
 
-  function flags(a) {
+  // id события из записи ленты шины (если заглушки его отдают).
+  function busEventId(ev) { return ev.event_id ? String(ev.event_id) : ''; }
+
+  // Шина в деле: выбрано задание 2 или в журнале уже есть публикации.
+  function busInUse() {
+    var b = last && last.summary && last.summary.bus;
+    return taskSel() === '2' || !!(b && b.publish > 0);
+  }
+
+  function flags(a, fin) {
     var f = [], quiet = nowServer() - a.last > GRACE_MS;
     if (a.charges >= 2) f.push('списаний: ' + a.charges);
     // Оплата бывает раньше резерва: флаг — только если к концу резерва нет.
@@ -414,6 +517,8 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     if (a.declines > 0 && a.charges === 0 && a.resv === 'held' && nowServer() - a.lastDecline > GRACE_MS) {
       f.push('резерв держится после 402');
     }
+    if (a.evIds.size > 1) f.push('разные id события: ' + a.evIds.size);
+    if (fin === 'paid' && a.busAcc === 0 && quiet && busInUse()) f.push('paid без события');
     return f;
   }
 
@@ -422,9 +527,14 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   function api(method, path, body, timeoutMs) {
     var ctl = new AbortController();
     var timer = setTimeout(function () { ctl.abort(); }, timeoutMs || 10000);
-    var headers = token ? { 'X-Admin-Token': token } : {};
+    // X-Stand-Client: ui — заглушки не пускают ручные действия страницы, пока
+    // идёт прогон сценариев (ответ 409).
+    var headers = { 'X-Stand-Client': 'ui' };
+    if (token) headers['X-Admin-Token'] = token;
     var opt = { method: method, headers: headers, cache: 'no-store', signal: ctl.signal };
-    if (body !== undefined) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    // Изменяющие запросы заглушки принимают только как JSON.
+    if (method !== 'GET') headers['Content-Type'] = 'application/json';
+    if (body !== undefined) opt.body = JSON.stringify(body);
     return fetch(path, opt).then(function (r) {
       return r.text().then(function (t) {
         clearTimeout(timer);
@@ -442,11 +552,16 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     if (res.status === 403) return 'нет доступа: откройте свежую ссылку из make ui';
     return (res.data && res.data.message) ? String(res.data.message) : 'ошибка ' + res.status;
   }
-  function say(id, text, tone) {
+  // Сообщение под кнопками; ttl — через сколько мс оно гаснет само.
+  var sayTimers = {};
+  function say(id, text, tone, ttl) {
     var m = $(id);
+    clearTimeout(sayTimers[id]);
     m.textContent = text || '';
     m.className = 'msg' + (tone ? ' ' + tone : '');
+    if (ttl) sayTimers[id] = setTimeout(function () { if (m.textContent === (text || '')) say(id, ''); }, ttl);
   }
+  var MSG_TTL = 15000;
 
   function fetchEvents() {
     return api('GET', '/admin/events?since=' + since, undefined, 5000).then(function (r) {
@@ -482,17 +597,21 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
 
   // ---------- шапка, плитки, лента, заказы ----------
 
+  // Окно отказа {from, until}: [текст, тон] для «до», «во время» и «после».
+  function windowChip(w, txt) {
+    var now = nowServer(), from = parseTime(w.from), until = parseTime(w.until);
+    if (now < from) return [txt.before + ' через ' + Math.ceil((from - now) / 1000) + ' с, на ' + secs(until - from, 0), 'warn'];
+    if (now < until) return [txt.during + ': ещё ' + Math.ceil((until - now) / 1000) + ' с', 'hang'];
+    return [txt.after + ' (' + txt.was + ' ' + secs(until - from, 0) + ')', 'ok'];
+  }
+
   function modeChips(d) {
     var out = [], p = (d && d.modes && d.modes.payment) || {};
-    var now = nowServer();
     if (p.fail_rate > 0) out.push(['500 на ' + pct(p.fail_rate) + ' запросов', 'bad']);
     if (p.decline_rate > 0) out.push(['банк отклоняет ' + pct(p.decline_rate) + ' заказов (402)', 'warn']);
     if (p.latency_ms > 0) out.push(['отвечает через ' + secs(p.latency_ms, p.latency_ms % 1000 ? 1 : 0), 'warn']);
     if (d && d.blackhole) {
-      var from = parseTime(d.blackhole.from), until = parseTime(d.blackhole.until);
-      if (now < from) out.push(['перестанет отвечать через ' + Math.ceil((from - now) / 1000) + ' с, на ' + secs(until - from, 0), 'warn']);
-      else if (now < until) out.push(['не отвечает: ещё ' + Math.ceil((until - now) / 1000) + ' с', 'hang']);
-      else out.push(['снова отвечает (не отвечал ' + secs(until - from, 0) + ')', 'ok']);
+      out.push(windowChip(d.blackhole, { before: 'перестанет отвечать', during: 'не отвечает', after: 'снова отвечает', was: 'не отвечал' }));
     }
     var lr = String(p.lost_response || '');
     if (lr && lr !== 'off') {
@@ -501,6 +620,23 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     }
     if (!out.length) out.push(['работает без отказов', 'ok']);
     return out;
+  }
+
+  function busChips(d) {
+    var out = [], b = (d && d.modes && d.modes.bus) || {};
+    if (d && d.bus_down) {
+      out.push(windowChip(d.bus_down, { before: 'станет недоступна', during: 'недоступна', after: 'снова доступна', was: 'была недоступна' }));
+      if (b.hang_rate > 0 && nowServer() < parseTime(d.bus_down.until)) out.push(['во время отказа висит ' + pct(b.hang_rate) + ' запросов', 'warn']);
+    }
+    if (!out.length) out.push(['работает без отказов', 'ok']);
+    return out;
+  }
+
+  // Шина недоступна прямо сейчас: остаток в секундах, иначе 0.
+  function busDownLeft(d) {
+    if (!d || !d.bus_down) return 0;
+    var now = nowServer(), from = parseTime(d.bus_down.from), until = parseTime(d.bus_down.until);
+    return now >= from && now < until ? Math.ceil((until - now) / 1000) : 0;
   }
 
   function renderHeader() {
@@ -522,6 +658,16 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     modeChips(d).forEach(function (c) { box.appendChild(el('span', 'chip ' + c[1], c[0])); });
     box.appendChild(el('span', 'muted', ' Inventory:'));
     box.appendChild(el('span', 'chip ok', 'работает без отказов'));
+    box.appendChild(el('span', 'muted', ' Шина:'));
+    busChips(d).forEach(function (c) { box.appendChild(el('span', 'chip ' + c[1], c[0])); });
+
+    var bb = $('bus-banner'), left = busDownLeft(d);
+    bb.style.display = left && !problem ? 'block' : 'none';
+    if (left && !problem) {
+      var hr = (modes.bus && modes.bus.hang_rate) || 0;
+      bb.textContent = 'Шина недоступна ещё ' + left + ' с: публикации событий получают 503' +
+        (hr > 0 ? ', ' + pct(hr) + ' запросов висят без ответа до конца отказа.' : '.');
+    }
 
     var banner = $('banner'), dot = $('dot'), conn = $('conn');
     banner.textContent = '';
@@ -578,6 +724,14 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     var r = s.reservations || {};
     $('t-res').textContent = (r.held || 0) + (r.released || 0);
     $('t-res-s').textContent = 'держатся ' + (r.held || 0) + ', сняты ' + (r.released || 0);
+    var b = s.bus || {}, bo = b.by_outcome || {};
+    $('t-bus').textContent = b.publish || 0;
+    var bl = [['202', 'принято'], ['503', '503'], ['hang', 'без ответа'], ['400', '400']].filter(function (x) { return bo[x[0]]; })
+      .map(function (x) { return x[1] + ': ' + bo[x[0]]; });
+    Object.keys(bo).forEach(function (k) { if (['202', '503', 'hang', '400'].indexOf(k) < 0 && bo[k]) bl.push(k + ': ' + bo[k]); });
+    $('t-bus-s').textContent = bl.join(', ') + (b.in_down ? (bl.length ? '; ' : '') + 'во время отказа: ' + b.in_down : '');
+    $('t-bus-o').textContent = b.orders_with_event || 0;
+    $('t-bus-o-s').textContent = b.accepted ? 'принято событий: ' + b.accepted : '';
   }
 
   function renderFeed() {
@@ -650,7 +804,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     var rows = [], bad = 0;
     all.forEach(function (o) {
       o.a = aggregate(o);
-      o.flags = flags(o.a);
+      o.flags = flags(o.a, st.finals.get(o.id));
       if (o.flags.length) bad++;
       if (!onlyBad || o.flags.length) rows.push(o);
     });
@@ -659,7 +813,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     body.textContent = '';
     if (!rows.length) {
       var tr0 = el('tr', 'empty-row'), td0 = el('td', '', all.length ? 'Проблемных заказов нет' : 'Заказов пока не было');
-      td0.colSpan = 8; tr0.appendChild(td0); body.appendChild(tr0);
+      td0.colSpan = 9; tr0.appendChild(td0); body.appendChild(tr0);
       return;
     }
     var frag = document.createDocumentFragment();
@@ -681,6 +835,14 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       var fc2 = el('td'), fin = st.finals.get(o.id);
       if (fin) fc2.appendChild(el('span', 'chip ' + finalTone(fin), fin)); else fc2.textContent = '—';
       tr.appendChild(fc2);
+      var ec = el('td');
+      if (a.busAcc > 0) {
+        ec.appendChild(el('span', 'chip ok', a.busAcc > 1 ? 'есть ×' + a.busAcc : 'есть'));
+        ec.title = 'публикаций: ' + a.busTries + ', принято шиной: ' + a.busAcc + (a.evIds.size ? ', разных id: ' + a.evIds.size : '');
+      } else if (a.busTries > 0) {
+        ec.appendChild(el('span', 'chip warn', 'не принято (' + a.busTries + ')'));
+      } else ec.textContent = '—';
+      tr.appendChild(ec);
       var fc = el('td'), fl = el('div', 'flags');
       o.flags.forEach(function (f) { fl.appendChild(el('span', 'chip bad', f)); });
       fc.appendChild(fl);
@@ -692,7 +854,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       frag.appendChild(tr);
       if (open) {
         var tl = el('tr', 'tl'), td = el('td');
-        td.colSpan = 8;
+        td.colSpan = 9;
         td.appendChild(timeline(o));
         tl.appendChild(td);
         frag.appendChild(tl);
@@ -704,9 +866,11 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       : 'Клик по заказу — всё, что заглушки видели по нему, по времени.';
   }
 
-  // ---------- управление: режимы Payment ----------
+  // ---------- управление: режимы Payment и шины ----------
+  // PUT /admin/modes заменяет режимы целиком: каждая панель шлёт и свою
+  // часть, и текущую соседнюю — чтобы не сбросить её.
 
-  var formDirty = false, formModes = '';
+  var dirty = { pay: false, bus: false }, shown = { pay: '', bus: '' };
 
   function numVal(id, min, max, name) {
     var raw = $(id).value.trim();
@@ -715,6 +879,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     if (!(v >= min && v <= max)) throw new Error(name + ': ожидается ' + min + '…' + max);
     return v;
   }
+  function pcText(v) { return v ? String(Math.round(v * 1000) / 10) : ''; }
 
   function readForm() {
     var p = {
@@ -734,37 +899,79 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
 
   function fillForm(p) {
     p = p || {};
-    function pc(v) { return v ? String(Math.round(v * 1000) / 10) : ''; }
-    $('f-fail').value = pc(p.fail_rate);
-    $('f-decline').value = pc(p.decline_rate);
+    $('f-fail').value = pcText(p.fail_rate);
+    $('f-decline').value = pcText(p.decline_rate);
     $('f-latency').value = p.latency_ms ? String(p.latency_ms) : '';
     $('f-bh').value = p.blackhole_s ? String(p.blackhole_s) : '';
     $('f-bh-after').value = p.blackhole_after_s ? String(p.blackhole_after_s) : '';
     var lr = String(p.lost_response || 'off'), m = /^rate:(.*)$/.exec(lr);
     $('f-lost').value = m ? 'rate' : lr === 'first_per_order' ? 'first_per_order' : 'off';
-    $('f-lost-rate').value = m ? pc(parseFloat(m[1])) : '';
+    $('f-lost-rate').value = m ? pcText(parseFloat(m[1])) : '';
     syncLost();
+  }
+
+  function readBusForm() {
+    var b = {
+      down_s: numVal('f-bus-down', 0, 3600, '«недоступна»'),
+      down_after_s: numVal('f-bus-after', 0, 3600, '«начиная через»'),
+      hang_rate: numVal('f-bus-hang', 0, 100, 'доля висящих запросов') / 100
+    };
+    if (!b.down_s) b.down_after_s = 0;
+    return b;
+  }
+
+  function fillBusForm(b) {
+    b = b || {};
+    $('f-bus-down').value = b.down_s ? String(b.down_s) : '';
+    $('f-bus-after').value = b.down_after_s ? String(b.down_after_s) : '';
+    $('f-bus-hang').value = pcText(b.hang_rate);
   }
 
   function syncLost() { $('f-lost-rate-wrap').style.display = $('f-lost').value === 'rate' ? '' : 'none'; }
 
-  // Форма следует за режимами стенда, пока её не начали править.
+  // Формы следуют за режимами стенда, пока их не начали править.
   function syncForm() {
     if (!last || !last.modes) return;
-    var key = JSON.stringify(last.modes.payment || {});
-    var focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('.ctl .form');
-    if (key !== formModes && !formDirty && !focused) {
-      formModes = key;
-      fillForm(last.modes.payment);
-    }
+    var act = document.activeElement;
+    [['pay', 'pay-form', 'payment', fillForm], ['bus', 'bus-form', 'bus', fillBusForm]].forEach(function (f) {
+      var key = JSON.stringify(last.modes[f[2]] || {});
+      var focused = act && act.closest && act.closest('#' + f[1]);
+      if (key !== shown[f[0]] && !dirty[f[0]] && !focused) {
+        shown[f[0]] = key;
+        f[3](last.modes[f[2]]);
+      }
+    });
   }
 
-  function putModes(payment, label) {
-    return api('PUT', '/admin/modes', { label: label, payment: payment }).then(function (r) {
+  function windowFrom(now, durS, afterS) {
+    if (!(durS > 0)) return undefined;
+    var from = now + (afterS || 0) * 1000;
+    return { from: new Date(from).toISOString(), until: new Date(from + durS * 1000).toISOString() };
+  }
+
+  function curModes(part) { return (last && last.modes && last.modes[part]) || {}; }
+
+  function putModes(payment, bus, label) {
+    return api('PUT', '/admin/modes', { label: label, payment: payment, bus: bus }).then(function (r) {
       if (!r.ok) throw new Error(errText(r));
-      formDirty = false;
-      formModes = JSON.stringify((r.data && r.data.payment) || {});
-      fillForm(r.data && r.data.payment);
+      var m = r.data || {};
+      dirty.pay = dirty.bus = false;
+      shown.pay = JSON.stringify(m.payment || {});
+      shown.bus = JSON.stringify(m.bus || {});
+      fillForm(m.payment);
+      fillBusForm(m.bus);
+      // Шапка и баннеры — сразу по ответу, не дожидаясь следующего опроса.
+      if (last && last.modes) {
+        var now = nowServer();
+        last.modes.payment = m.payment || payment; last.modes.bus = m.bus || bus;
+        last.modes.label = m.label !== undefined ? m.label : label;
+        last.modes.finished = false;
+        last.started_at = new Date(now).toISOString();
+        last.blackhole = windowFrom(now, last.modes.payment.blackhole_s, last.modes.payment.blackhole_after_s);
+        last.bus_down = windowFrom(now, last.modes.bus.down_s, last.modes.bus.down_after_s);
+      }
+      say('modes-msg', ''); say('bus-msg', '');
+      refresh();
       return r;
     });
   }
@@ -772,36 +979,50 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   function applyForm() {
     var p;
     try { p = readForm(); } catch (e) { say('modes-msg', e.message, 'bad'); return; }
-    putModes(p, 'ручной режим').then(function () { say('modes-msg', 'Режимы применены.', 'ok'); refresh(); },
+    putModes(p, curModes('bus'), 'ручной режим').then(function () { say('modes-msg', 'Режимы применены.', 'ok', MSG_TTL); refresh(); },
       function (e) { say('modes-msg', e.message, 'bad'); });
   }
 
   function modesOff() {
-    putModes({}, 'ручной режим').then(function () { say('modes-msg', 'Отказов нет: Payment работает штатно.', 'ok'); refresh(); },
+    putModes({}, {}, 'ручной режим').then(function () { say('modes-msg', 'Отказов нет: Payment и шина работают штатно.', 'ok', MSG_TTL); refresh(); },
       function (e) { say('modes-msg', e.message, 'bad'); });
+  }
+
+  function applyBusForm() {
+    var b;
+    try { b = readBusForm(); } catch (e) { say('bus-msg', e.message, 'bad'); return; }
+    putModes(curModes('payment'), b, 'ручной режим').then(function () { say('bus-msg', 'Режим шины применён.', 'ok', MSG_TTL); refresh(); },
+      function (e) { say('bus-msg', e.message, 'bad'); });
+  }
+
+  function busOff() {
+    putModes(curModes('payment'), {}, 'ручной режим').then(function () { say('bus-msg', 'Отказа нет: шина работает штатно.', 'ok', MSG_TTL); refresh(); },
+      function (e) { say('bus-msg', e.message, 'bad'); });
   }
 
   function resetJournal() {
     api('POST', '/admin/reset').then(function (r) {
       if (!r.ok) { say('modes-msg', errText(r), 'bad'); return; }
-      formDirty = false; formModes = '';
-      say('modes-msg', 'Журнал очищен, отказы убраны.', 'ok');
+      dirty.pay = dirty.bus = false; shown.pay = shown.bus = '';
+      bal = null; renderBalances();
+      say('modes-msg', 'Журнал очищен, отказы убраны.', 'ok', MSG_TTL);
       refresh();
     });
   }
 
-  function applyPreset(id) {
+  function applyPreset(id, msgId) {
     var ps = PRESETS[id];
     if (!ps) return;
-    var pm = Object.assign({}, ps.payment || {});
-    putModes(pm, 'ручной режим · как в ' + id).then(function () {
+    msgId = msgId || 'modes-msg';
+    var pm = Object.assign({}, ps.payment || {}), bm = Object.assign({}, ps.bus || {});
+    putModes(pm, bm, 'ручной режим · как в ' + id).then(function () {
       if (ps.orders) $('f-n').value = String(Math.min(ps.orders, 500));
       if (ps.rate_per_s) $('f-rate').value = String(ps.rate_per_s);
       var hint = id + ': режимы выставлены; «Отправить» — ' + ps.orders + ' заказов с темпом ' + ps.rate_per_s + ' в секунду, как в сценарии.';
       if (ps.orders_after) hint += ' В сценарии после подъёма Payment — ещё ' + ps.orders_after + ' заказов.';
-      say('modes-msg', hint, 'ok');
+      say(msgId, hint, 'ok', MSG_TTL);
       refresh();
-    }, function (e) { say('modes-msg', e.message, 'bad'); });
+    }, function (e) { say(msgId, e.message, 'bad'); });
   }
 
   function buildPresets() {
@@ -816,6 +1037,108 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       b.addEventListener('click', function () { applyPreset(id); });
       box.appendChild(b);
     });
+    var s6 = PRESETS.S6, b6 = $('b-bus-s6');
+    b6.title = 'S6 · ' + s6.title + ': шина недоступна ' + (s6.bus.down_s || 0) + ' с через ' + (s6.bus.down_after_s || 0) +
+      ' с, висит ' + pct(s6.bus.hang_rate || 0) + ' запросов; Payment — ' + pct((s6.payment || {}).decline_rate || 0) +
+      ' отказов банка; ' + s6.orders + ' заказов по ' + s6.rate_per_s + ' в секунду';
+  }
+
+  // ---------- управление: доставка событий (задание 2) ----------
+
+  var bal = null, balBusy = false;
+
+  function readDelivery() {
+    var n = Math.round(numVal('f-dlv-n', 1, 10000, 'событий'));
+    var u = Math.round(numVal('f-dlv-users', 1, 10000, 'покупателей'));
+    var c = Math.round(numVal('f-dlv-copies', 1, 10, 'копий'));
+    var par = numVal('f-dlv-par', 0, 100, 'доля одновременных копий') / 100;
+    var rate = numVal('f-dlv-rate', 0.1, 1000, 'темп');
+    if (!n || !u || !c || !rate) throw new Error('Укажите число событий, покупателей, копий и темп.');
+    if (u > n) throw new Error('покупателей не больше, чем событий');
+    return { events: n, users: u, max_copies: c, parallel_rate: par, rate_per_s: rate };
+  }
+
+  function deliver() {
+    var body;
+    try { body = readDelivery(); } catch (e) { say('dlv-msg', e.message, 'bad'); return; }
+    api('POST', '/admin/bus/deliver', body).then(function (r) {
+      if (!r.ok) { say('dlv-msg', errText(r), 'bad'); return; }
+      bal = null; renderBalances();
+      dlvWatch = true;
+      say('dlv-msg', 'Доставка началась: ' + body.events + ' событий для ' + body.users + ' покупателей.', 'ok');
+      refresh();
+    });
+  }
+
+  function redeliver() {
+    api('POST', '/admin/bus/redeliver').then(function (r) {
+      if (!r.ok) { say('dlv-msg', errText(r), 'bad'); return; }
+      dlvWatch = true;
+      say('dlv-msg', 'Шина присылает ещё по одной копии каждого события.', 'ok');
+      refresh();
+    });
+  }
+
+  function checkBalances() {
+    if (balBusy) return;
+    balBusy = true; renderLock();
+    dlvWatch = dlvSeenPending = false;
+    var dl = last && last.summary && last.summary.delivery, pend = !!(dl && dl.pending > 0);
+    say('dlv-msg', 'Проверяю балансы…');
+    api('POST', '/admin/bus/balances', undefined, 60000).then(function (r) {
+      balBusy = false; renderLock();
+      if (!r.ok || !r.data) { say('dlv-msg', errText(r), 'bad'); return; }
+      bal = { users: r.data.users || [], at: Date.now(), pending: pend };
+      var bad = bal.users.filter(balMismatch).length;
+      say('dlv-msg', 'Балансы на ' + hms(bal.at).slice(0, 8) + ': ' + (bad ? 'расхождений ' + bad + ' из ' + bal.users.length
+        : 'все ' + bal.users.length + ' совпали с ожидаемыми'), bad ? 'bad' : 'ok');
+      renderBalances();
+    });
+  }
+
+  function balMismatch(u) { return !!u.error || u.points === null || u.points === undefined || u.points !== u.expected; }
+
+  function userNum(id) { var m = /(\d+)$/.exec(String(id)); return m ? Number(m[1]) : 1e9; }
+
+  function renderBalances() {
+    var tb = $('bal'), t = $('bal-table');
+    tb.textContent = '';
+    t.hidden = !bal;
+    $('bal-pending').hidden = !(bal && bal.pending);
+    if (!bal) return;
+    var rows = bal.users.slice().sort(function (a, b) { return userNum(a.user_id) - userNum(b.user_id); });
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (u) {
+      var bad = balMismatch(u), tr = el('tr', bad ? 'mismatch' : 'match');
+      var zero = String(u.user_id) === 'u-0';
+      tr.appendChild(el('td', 'mono', String(u.user_id)));
+      tr.appendChild(el('td', 'num', u.points === null || u.points === undefined ? '—' : u.points));
+      tr.appendChild(el('td', 'num', u.expected));
+      tr.appendChild(el('td', '', u.error ? String(u.error) : zero ? 'событий не было, должно быть 0' : ''));
+      frag.appendChild(tr);
+    });
+    tb.appendChild(frag);
+  }
+
+  // dlvWatch: под кнопками висит «доставка началась» — сменить на итог, когда
+  // все события подтверждены.
+  var dlvWatch = false, dlvSeenPending = false;
+  function renderDelivery() {
+    var d = last && last.summary && last.summary.delivery, box = $('dlv-state');
+    box.textContent = '';
+    if (dlvWatch && d) {
+      if (d.pending > 0) dlvSeenPending = true;
+      else if (dlvSeenPending) {
+        dlvWatch = dlvSeenPending = false;
+        say('dlv-msg', 'Доставка закончилась: все ' + d.events + ' событий подтверждены.', 'ok', MSG_TTL);
+      }
+    }
+    if (!d) { box.appendChild(el('span', 'muted', 'Доставок в этом журнале не было.')); return; }
+    var done = d.pending === 0;
+    box.appendChild(el('b', '', done ? 'Все ' + d.events + ' событий подтверждены' :
+      'Подтверждено ' + (d.acked_events || 0) + ' из ' + d.events + ' событий'));
+    box.appendChild(el('span', 'muted', ' · покупателей ' + (d.users || 0) + ', копий ' + (d.deliveries || 0) +
+      ', запросов к Orders ' + (d.attempts || 0) + (done ? '' : ', ждут подтверждения ' + d.pending)));
   }
 
   // ---------- управление: заказы ----------
@@ -823,7 +1146,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   function sendOrders(count, rate) {
     api('POST', '/admin/orders', { count: count, rate_per_s: rate }).then(function (r) {
       if (!r.ok) { say('send-msg', errText(r), 'bad'); return; }
-      say('send-msg', count === 1 ? 'Заказ отправлен: ответ появится в ленте.' : 'Отправка началась.', 'ok');
+      say('send-msg', count === 1 ? 'Заказ отправлен: ответ появится в ленте.' : 'Отправка началась.', 'ok', MSG_TTL);
       refresh();
     });
   }
@@ -838,9 +1161,13 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     sendOrders(Math.round(n), rate);
   }
 
+  var checkBusy = false;
   function checkStatuses() {
+    if (checkBusy) return;
+    checkBusy = true; renderLock();
     say('send-msg', 'Проверяю статусы…');
     api('POST', '/admin/orders/check', undefined, 60000).then(function (r) {
+      checkBusy = false; renderLock();
       if (!r.ok || !r.data) { say('send-msg', errText(r), 'bad'); return; }
       var m = new Map(), counts = {};
       Object.keys(r.data.statuses || {}).forEach(function (k) {
@@ -858,16 +1185,32 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
 
   // ---------- проверка сценариями (runner-ui) ----------
 
-  var runner = { avail: null, st: null, paramsLoaded: false, timer: null };
+  var runner = { avail: null, st: null, params: { '1': false, '2': false }, timer: null };
+  var taskTouched = false;
+
+  function taskSel() { return $('f-task').value === '2' ? '2' : '1'; }
+  function statusTask(s) { return s && s.task ? String(s.task) : '1'; }
+
+  function renderTask() {
+    var t2 = taskSel() === '2';
+    $('run-btns').hidden = t2;
+    $('run-btns-2').hidden = !t2;
+    $('task2-note').hidden = !t2;
+  }
 
   function pollRunner() {
     clearTimeout(runner.timer);
     api('GET', '/admin/runner/status', undefined, 8000).then(function (r) {
       if (r.ok && r.data) {
         runner.avail = true; runner.st = r.data; runner.err = '';
-        if (!runner.paramsLoaded) loadParams();
+        // Пока задание не выбрано вручную — показываем то, что прогонялось.
+        if ((!taskTouched || r.data.state === 'running') && r.data.task && taskSel() !== statusTask(r.data)) {
+          $('f-task').value = statusTask(r.data);
+          renderTask();
+        }
+        ['1', '2'].forEach(function (t) { if (!runner.params[t]) loadParams(t); });
       } else {
-        runner.avail = false; runner.st = null; runner.err = errText(r);
+        runner.avail = false; runner.st = null; runner.err = errText(r); runner.errStatus = r.status;
       }
       renderRunner();
       var delay = runner.avail ? (runner.st.state === 'running' ? 1500 : 5000) : 15000;
@@ -875,20 +1218,30 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     });
   }
 
-  function loadParams() {
-    runner.paramsLoaded = true;
-    api('GET', '/admin/runner/params').then(function (r) {
-      if (!r.ok || !r.data || !r.data.scenarios) { runner.paramsLoaded = false; return; }
-      IDS.forEach(function (id) { if (r.data.scenarios[id]) PRESETS[id] = r.data.scenarios[id]; });
+  function loadParams(task) {
+    runner.params[task] = true;
+    api('GET', '/admin/runner/params?task=' + task).then(function (r) {
+      if (!r.ok || !r.data || !r.data.scenarios) { runner.params[task] = false; return; }
+      var sc = r.data.scenarios;
+      if (task === '1') {
+        IDS.forEach(function (id) { if (sc[id]) PRESETS[id] = sc[id]; });
+      } else if (sc.S6) {
+        var p6 = Object.assign({}, PRESETS.S6, sc.S6);
+        if (!p6.title) p6.title = PRESETS.S6.title;
+        var bus = Object.assign({}, sc.S6.bus || PRESETS.S6.bus);
+        if (sc.S6.down_after_s && !bus.down_after_s) bus.down_after_s = sc.S6.down_after_s;
+        p6.bus = bus;
+        PRESETS.S6 = p6;
+      }
       buildPresets();
       renderLock();
     });
   }
 
-  function startRun(only) {
-    var wait = Number($('f-wait').value);
+  function startRun(ids) {
+    var wait = Number($('f-wait').value), task = taskSel();
     say('run-msg', 'Запускаю…');
-    api('POST', '/admin/runner/run', { only: only, wait: wait }).then(function (r) {
+    api('POST', '/admin/runner/run', { task: task, ids: ids, wait_s: wait }).then(function (r) {
       if (!r.ok) { say('run-msg', errText(r), 'bad'); pollRunner(); return; }
       say('run-msg', '');
       runner.avail = true; runner.st = r.data;
@@ -897,28 +1250,70 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     });
   }
 
-  function openReport() {
-    api('GET', '/admin/runner/report', undefined, 15000).then(function (r) {
-      if (!r.ok) { say('run-msg', errText(r), 'bad'); return; }
-      var url = URL.createObjectURL(new Blob([r.text], { type: 'text/html' }));
-      var a = el('a');
-      a.href = url; a.target = '_blank'; a.rel = 'noopener';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+  // Отчёт выбранного задания загружается заранее, как только прогон
+  // закончился: окно по клику открывается сразу, в обработчике клика (иначе
+  // браузер его заблокирует).
+  var reports = { '1': { key: '', url: '' }, '2': { key: '', url: '' } }, reportLoading = false;
+  // Прогон из статуса относится к выбранному заданию.
+  function sameTask(s, task) { return !!(s && s.state && s.state !== 'idle' && statusTask(s) === task); }
+  // 'earlier' — в этой сессии задание не прогонялось: отчёт прошлого прогона с диска.
+  function reportKey(s, task) {
+    if (!runner.avail) return '';
+    if (!sameTask(s, task)) return 'earlier';
+    return s.state === 'done' && s.report ? 'fin:' + String(s.finished_at || '') : '';
+  }
+  function preloadReport(s) {
+    var task = taskSel(), key = reportKey(s, task), rep = reports[task];
+    if (!key || key === rep.key || reportLoading) return;
+    reportLoading = true;
+    api('GET', '/admin/runner/report?task=' + task, undefined, 15000).then(function (r) {
+      reportLoading = false;
+      if (rep.url) URL.revokeObjectURL(rep.url);
+      rep.key = key;
+      rep.url = r.ok ? URL.createObjectURL(new Blob([r.text], { type: 'text/html' })) : '';
+      renderRunner();
     });
   }
+  function openReport() {
+    var url = reports[taskSel()].url;
+    if (!url) { say('run-msg', 'Отчёт ещё загружается…'); return; }
+    var w = window.open('', '_blank');
+    if (w) {
+      w.opener = null;
+      w.location.href = url;
+      say('run-msg', '');
+      return;
+    }
+    // Окно не открылось: ссылка, по которой браузер откроет его сам.
+    var m = $('run-msg');
+    m.textContent = 'Браузер не открыл окно: ';
+    m.className = 'msg';
+    var a = el('a', '', 'открыть отчёт');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    m.appendChild(a);
+  }
 
+  var ABORT_NOTE = ' Если прогон оборвался (раннер остановлен без метки конца), кнопки вернутся примерно через 2,5 мин.';
   function running() { return !!(runner.st && runner.st.state === 'running'); }
+  // Прогон раннера по данным заглушек: make scenarios (cli) или из дашборда.
+  function stubsBusy() { return !!(last && last.runner_active); }
+  function cliRunning() { return stubsBusy() && !running() && last.runner_source !== 'dashboard'; }
   function sendingActive() { return !!(last && last.sending && last.sending.active); }
 
   function renderRunner() {
     var s = runner.st, box = $('run-state'), chips = $('run-chips');
     box.textContent = ''; chips.textContent = '';
-    $('b-report').hidden = !(s && s.report);
+    preloadReport(s);
+    var rep = reports[taskSel()];
+    var br = $('b-report');
+    br.hidden = !(rep.url && rep.key === reportKey(s, taskSel()));
+    br.textContent = rep.key === 'earlier' ? 'Отчёт прошлого прогона (HTML)' : 'Отчёт HTML';
     var out = $('run-out'), wrap = $('run-out-wrap');
     if (!runner.avail) {
       box.appendChild(el('span', 'muted', runner.avail === null ? 'Проверяю, запущен ли сервис прогонов…' : ''));
-      if (runner.avail === false) {
+      if (runner.avail === false && runner.errStatus !== 502) {
+        box.appendChild(el('span', 'msg bad', 'Прогоны отсюда недоступны: ' + runner.err));
+      } else if (runner.avail === false) {
         var c = el('code', '', 'make ui');
         box.appendChild(document.createTextNode('Прогоны отсюда недоступны: сервис прогонов не запущен. Запустите '));
         box.appendChild(c);
@@ -928,16 +1323,17 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
       renderLock();
       return;
     }
-    if (!s || s.state === 'idle') {
-      box.appendChild(el('span', 'muted', 'Прогонов из дашборда ещё не было.'));
+    var same = sameTask(s, taskSel());
+    if (!same) {
+      box.appendChild(el('span', 'muted', 'Задание ' + taskSel() + ': прогонов из дашборда в этой сессии ещё не было.'));
     } else {
-      var started = parseTime(s.started_at);
+      var started = parseTime(s.started_at), tn = 'Задание ' + statusTask(s) + ' · ';
       if (s.state === 'running') {
         var cur = (s.scenarios || []).filter(function (x) { return x.state === 'running'; })[0];
-        box.appendChild(el('b', '', cur ? 'Идёт ' + cur.id + ' · ' + cur.title : 'Проверяю, что стенд отвечает…'));
+        box.appendChild(el('b', '', tn + (cur ? 'идёт ' + cur.id + ' · ' + cur.title : 'проверяю, что стенд отвечает…')));
         box.appendChild(el('span', 'muted', ' · прогон идёт ' + clock(Date.now() - started) + ', пауза после заказов ' + s.wait_s + ' с'));
       } else {
-        var t = el('b', '', s.results && s.results.error ? 'Стенд: ' + s.results.error : 'Прошло ' + s.passed + ' из ' + s.total);
+        var t = el('b', '', tn + (s.results && s.results.error ? 'стенд: ' + s.results.error : 'прошло ' + s.passed + ' из ' + s.total));
         box.appendChild(t);
         if (s.level) box.appendChild(el('span', '', ' · уровень: ' + s.level));
         var fin = parseTime(s.finished_at);
@@ -951,7 +1347,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
         chips.appendChild(chip);
       });
     }
-    var text = (s && s.text) || '';
+    var text = (same && s.text) || '';
     wrap.hidden = !text;
     if (out.textContent !== text) {
       var atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
@@ -962,17 +1358,22 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   }
 
   function renderLock() {
-    var busy = running(), hint = $('lock-hint');
+    var busy = running() || stubsBusy(), hint = $('lock-hint');
     hint.hidden = !busy;
-    hint.textContent = busy
-      ? 'Идёт прогон сценариев: ручные кнопки недоступны — ручные режимы и заказы испортили бы проверку. Дождитесь конца прогона.'
-      : '';
+    hint.textContent = !busy ? ''
+      : cliRunning()
+        ? 'Идёт прогон make scenarios — ручные кнопки недоступны до его конца: ручные режимы и заказы испортили бы проверку.' + ABORT_NOTE
+        : 'Идёт прогон сценариев: ручные кнопки недоступны — ручные режимы и заказы испортили бы проверку. Дождитесь конца прогона.' + ABORT_NOTE;
     Array.from(document.querySelectorAll('.manual')).forEach(function (e) { e.disabled = busy; });
     var noOrders = !!(last && last.orders_enabled === false);
     ['b-one', 'b-send', 'b-check'].forEach(function (id) { if (noOrders) $(id).disabled = true; });
+    if (checkBusy) $('b-check').disabled = true;
+    if (balBusy) $('b-bal').disabled = true;
+    if (noOrders) ['b-dlv', 'b-redlv', 'b-bal'].forEach(function (id) { $(id).disabled = true; });
     if (noOrders && !$('send-msg').textContent) say('send-msg', 'Заглушкам не задан адрес Orders (ORDERS_URL): отправка недоступна.', 'bad');
     var sending = sendingActive();
     Array.from(document.querySelectorAll('.run')).forEach(function (e) { e.disabled = !runner.avail || busy || sending; });
+    $('f-task').disabled = busy;
     if (sending && !busy) {
       var sd = last.sending;
       say('send-msg', 'Отправка: ' + sd.sent + ' из ' + sd.total + ', ответов ' + sd.done + '. Прогоны сценариев — после её конца.');
@@ -980,15 +1381,18 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   }
 
   function buildRunButtons() {
-    var box = $('run-btns');
-    IDS.forEach(function (id) {
-      var b = el('button', 'run', id);
-      b.type = 'button';
-      b.title = 'Прогнать только ' + id + (PRESETS[id] ? ' · ' + PRESETS[id].title : '');
-      b.addEventListener('click', function () { startRun(id); });
-      box.appendChild(b);
+    [['1', 'run-btns'], ['2', 'run-btns-2']].forEach(function (g) {
+      var box = $(g[1]);
+      TASK_IDS[g[0]].forEach(function (id) {
+        var b = el('button', 'run', id);
+        b.type = 'button';
+        b.title = 'Прогнать только ' + id + (PRESETS[id] ? ' · ' + PRESETS[id].title : '');
+        b.addEventListener('click', function () { startRun([id]); });
+        box.appendChild(b);
+      });
     });
-    $('b-run-all').addEventListener('click', function () { startRun(IDS.join(',')); });
+    $('b-run-all').addEventListener('click', function () { startRun(TASK_IDS['1'].slice()); });
+    $('b-run-t2').addEventListener('click', function () { startRun(TASK_IDS['2'].slice()); });
   }
 
   var lastSendingActive = false;
@@ -998,10 +1402,13 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
     renderFeed();
     renderOrders();
     syncForm();
+    renderDelivery();
     var sa = sendingActive();
     if (lastSendingActive && !sa && last && last.sending) {
       var sd = last.sending;
-      say('send-msg', 'Отправлено ' + sd.total + ', ответов ' + sd.done + '. Итоги — «Проверить статусы».', 'ok');
+      if (sd.stopped === 'reset') say('send-msg', 'Отправка прервана: журнал очищен (отправлено ' + sd.sent + ' из ' + sd.total + ').', 'bad');
+      else if (sd.stopped === 'runner') say('send-msg', 'Отправка прервана: начался прогон сценариев (отправлено ' + sd.sent + ' из ' + sd.total + ').', 'bad');
+      else say('send-msg', 'Отправлено ' + sd.total + ', ответов ' + sd.done + '. Итоги — «Проверить статусы».', 'ok');
     }
     lastSendingActive = sa;
     renderLock();
@@ -1011,14 +1418,23 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   function refresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(function () { try { render(); } catch (e) { console.error(e); } }, 50); }
 
   $('only-problems').addEventListener('change', renderOrders);
-  Array.from(document.querySelectorAll('.ctl .form input, .ctl .form select')).forEach(function (e) {
-    if (e.id === 'f-n' || e.id === 'f-rate') return;
-    e.addEventListener('input', function () { formDirty = true; });
+  Array.from(document.querySelectorAll('#pay-form input, #pay-form select')).forEach(function (e) {
+    e.addEventListener('input', function () { dirty.pay = true; });
+  });
+  Array.from(document.querySelectorAll('#bus-form input')).forEach(function (e) {
+    e.addEventListener('input', function () { dirty.bus = true; });
   });
   $('f-lost').addEventListener('change', syncLost);
   $('b-apply').addEventListener('click', applyForm);
   $('b-off').addEventListener('click', modesOff);
   $('b-reset').addEventListener('click', resetJournal);
+  $('b-bus-apply').addEventListener('click', applyBusForm);
+  $('b-bus-off').addEventListener('click', busOff);
+  $('b-bus-s6').addEventListener('click', function () { applyPreset('S6', 'bus-msg'); });
+  $('b-dlv').addEventListener('click', deliver);
+  $('b-redlv').addEventListener('click', redeliver);
+  $('b-bal').addEventListener('click', checkBalances);
+  $('f-task').addEventListener('change', function () { taskTouched = true; renderTask(); say('run-msg', ''); renderRunner(); refresh(); });
   $('b-one').addEventListener('click', function () { sendOrders(1, 1); });
   $('b-send').addEventListener('click', sendMany);
   $('b-check').addEventListener('click', checkStatuses);
@@ -1026,6 +1442,7 @@ pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; over
   window.addEventListener('hashchange', function () { location.reload(); });
   buildPresets();
   buildRunButtons();
+  renderTask();
   syncLost();
   render();
   poll();

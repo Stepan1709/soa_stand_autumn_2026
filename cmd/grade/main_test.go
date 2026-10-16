@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,5 +153,79 @@ func TestCleanEnv(t *testing.T) {
 	got := cleanEnv([]string{"PATH=/bin", "MAKEFLAGS=ONLY=S1", "MAKELEVEL=1", "HOME=/h"})
 	if strings.Join(got, " ") != "PATH=/bin HOME=/h" {
 		t.Fatalf("cleanEnv = %v", got)
+	}
+}
+
+// gitRepo — репозиторий с файлами одним коммитом.
+func gitRepo(t *testing.T, dir string, files map[string]string, msg string) {
+	t.Helper()
+	for p, body := range files {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+}
+
+func TestPolicyBaseMergeBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("нет git")
+	}
+	var cfg config
+	cfg.Diff.AllowPrefix = "orders/"
+	upstream := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", upstream).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	gitRepo(t, upstream, map[string]string{"mocks/main.go": "v1", "orders/app.py": "naive"}, "stand v1")
+
+	// Форк студента от v1: своё решение в orders/.
+	fork := filepath.Join(t.TempDir(), "fork")
+	if out, err := exec.Command("git", "clone", "-q", upstream, fork).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	gitRepo(t, fork, map[string]string{"orders/app.py": "solution"}, "решение")
+
+	// Репозиторий курса обновил стенд, форк не синхронизирован.
+	gitRepo(t, upstream, map[string]string{"mocks/main.go": "v2", "mocks/bus.go": "new"}, "stand v2")
+
+	dir, cleanup, how := policyBase(upstream, fork)
+	defer cleanup()
+	if !strings.Contains(how, "merge-base") {
+		t.Fatalf("сравнили с %s", how)
+	}
+	if changed, err := checkPolicy(dir, fork, cfg); err != nil || strings.Join(changed, ",") != "orders/app.py" {
+		t.Fatalf("несинхронизированный форк: %v %v", changed, err)
+	}
+	// Без merge-base тот же форк был бы нарушителем.
+	if _, err := checkPolicy(upstream, fork, cfg); err == nil {
+		t.Fatal("сравнение с новым baseline не нашло отличий")
+	}
+
+	// Студент поменял файл стенда — нарушение и с merge-base.
+	gitRepo(t, fork, map[string]string{"mocks/main.go": "hacked"}, "чужой файл")
+	dir2, cleanup2, _ := policyBase(upstream, fork)
+	defer cleanup2()
+	if _, err := checkPolicy(dir2, fork, cfg); err == nil || !strings.Contains(err.Error(), "mocks/main.go") {
+		t.Fatalf("изменение вне orders/ пропущено: %v", err)
+	}
+	if out, _ := exec.Command("git", "-C", fork, "show-ref").Output(); strings.Contains(string(out), "soa-grade") {
+		t.Fatalf("служебная ссылка осталась: %s", out)
+	}
+
+	// Не git — сравнение с baseline, как раньше.
+	plain := tree(t, map[string]string{"orders/app.py": "x"})
+	if dir, cleanup, how := policyBase(plain, plain); dir != plain || !strings.HasPrefix(how, "baseline") {
+		t.Fatalf("без git: %s %s", dir, how)
+	} else {
+		cleanup()
 	}
 }

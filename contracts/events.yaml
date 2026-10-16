@@ -1,0 +1,113 @@
+openapi: 3.0.3
+info:
+  title: Events
+  version: "1.0"
+  description: |
+    Шина событий — задание 2 (необязательное). Адрес — переменная окружения
+    `EVENTS_URL`.
+
+    - Orders публикует в шину событие `order.paid` о каждом оплаченном заказе:
+      `POST /events`.
+    - Шина доставляет в Orders событие `delivery.confirmed`:
+      `POST /webhooks/delivery` вашего сервиса (см. контракт Orders).
+
+    Шина доставляет события как минимум один раз: одно и то же событие может
+    прийти несколько раз. По `id` подписчик отличает копию от нового события.
+servers:
+  - url: http://mocks:8080
+paths:
+  /events:
+    post:
+      summary: Опубликовать событие
+      description: |
+        `202` — шина приняла событие. Если опубликовать событие с тем же
+        `id` ещё раз, ответ тоже `202`: подписчики получат копию и отличат её
+        по `id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderPaid"
+            example:
+              id: "7b1f9c2e-5d0a-4e8b-a3c4-91f2d6e8b0a7"
+              type: order.paid
+              order_id: "3f0c6d1e-8a52-4c1b-9d7e-2b6f3a1c9e40"
+              occurred_at: "2026-10-14T12:00:00Z"
+      responses:
+        "202":
+          description: Событие принято
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: accepted }
+        "400":
+          description: Некорректное событие
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Шина недоступна, событие не принято
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    OrderPaid:
+      type: object
+      required: [id, type, order_id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            Идентификатор события, выбирает публикующий. У всех копий одного
+            события он одинаковый, у разных событий — разный.
+        type:
+          type: string
+          enum: [order.paid]
+        order_id:
+          type: string
+          minLength: 1
+          description: Заказ, который стал `paid` (id из ответа `POST /orders`)
+        occurred_at:
+          type: string
+          format: date-time
+    DeliveryConfirmed:
+      type: object
+      description: |
+        Событие, которое шина доставляет на `POST /webhooks/delivery` вашего
+        сервиса.
+      required: [id, type, user_id, bonus_points]
+      properties:
+        id:
+          type: string
+          description: Идентификатор события; у всех копий одного события одинаковый
+        type:
+          type: string
+          enum: [delivery.confirmed]
+        user_id:
+          type: string
+        bonus_points:
+          type: integer
+          minimum: 1
+          description: Сколько бонусов начислить покупателю за это событие
+        occurred_at:
+          type: string
+          format: date-time
+      example:
+        id: "evt-5e2c0a9d14b7f381"
+        type: delivery.confirmed
+        user_id: u-3
+        bonus_points: 40
+        occurred_at: "2026-10-14T12:00:05Z"
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
